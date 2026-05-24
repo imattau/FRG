@@ -1,0 +1,12 @@
+/docs/superpowers/
+
+# Go build outputs
+/bin/
+*.test
+*.out
+.coverprofile
+coverage.out
+
+# Local Go toolchain/cache directories
+/.gocache/
+/.toolchain/
