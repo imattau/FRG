@@ -15,6 +15,7 @@ import (
 func mustSignTx(senderKP, receiverKP *keys.Keypair, sender, receiver string, value int64, nonce uint64) *tx.Tx {
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	t1 := &tx.Tx{
+		Type:           tx.TxTypeTransfer,
 		Sender:         sender,
 		Receiver:       receiver,
 		Value:          new(big.Int).Mul(big.NewInt(value), scale),

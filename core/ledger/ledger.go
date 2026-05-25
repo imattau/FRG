@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"encoding/binary"
 	"math/big"
 
 	rgerrors "github.com/imattau/frg/core/errors"
@@ -9,6 +10,7 @@ import (
 )
 
 var balancesBucket = []byte("balances")
+var noncesBucket = []byte("nonces")
 var maxUint256 = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 
 // Ledger is a bbolt-backed balance store. Keys are 32-byte Ed25519 public keys;
@@ -24,7 +26,10 @@ func Open(path string) (*Ledger, error) {
 		return nil, err
 	}
 	if err := db.Update(func(btx *bolt.Tx) error {
-		_, err := btx.CreateBucketIfNotExists(balancesBucket)
+		if _, err := btx.CreateBucketIfNotExists(balancesBucket); err != nil {
+			return err
+		}
+		_, err := btx.CreateBucketIfNotExists(noncesBucket)
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -54,10 +59,24 @@ func (l *Ledger) BalanceOf(account [32]byte) (*big.Int, error) {
 	return bal, err
 }
 
+// NonceOf returns the last accepted nonce for account.
+// Returns 0 for unknown accounts (no error).
+func (l *Ledger) NonceOf(account [32]byte) (uint64, error) {
+	var nonce uint64
+	err := l.db.View(func(btx *bolt.Tx) error {
+		v := btx.Bucket(noncesBucket).Get(account[:])
+		if v != nil {
+			nonce = binary.BigEndian.Uint64(v)
+		}
+		return nil
+	})
+	return nonce, err
+}
+
 // Transfer applies a validated Tx: verifies 2-of-2 sigs, checks sender has
 // sufficient balance, debits SenderPubKey, credits ReceiverPubKey atomically.
 // Returns ERR_012 on invalid sig, ERR_013 if sender balance < tx.Value,
-// ERR_001 on arithmetic overflow.
+// ERR_018 on sequence fault, ERR_001 on arithmetic overflow.
 func (l *Ledger) Transfer(t *tx.Tx) error {
 	if err := t.VerifySigs(); err != nil {
 		return err
@@ -66,18 +85,36 @@ func (l *Ledger) Transfer(t *tx.Tx) error {
 		return err
 	}
 	return l.db.Update(func(btx *bolt.Tx) error {
-		b := btx.Bucket(balancesBucket)
-		senderBal := readBalance(b, t.SenderPubKey)
+		nb := btx.Bucket(noncesBucket)
+		var storedNonce uint64
+		v := nb.Get(t.SenderPubKey[:])
+		if v != nil {
+			storedNonce = binary.BigEndian.Uint64(v)
+		}
+
+		if t.Nonce != storedNonce+1 {
+			return rgerrors.Newf(rgerrors.ErrSequenceFault, "expected nonce %d, got %d", storedNonce+1, t.Nonce)
+		}
+
+		bb := btx.Bucket(balancesBucket)
+		senderBal := readBalance(bb, t.SenderPubKey)
 		if senderBal.Cmp(t.Value) < 0 {
 			return rgerrors.New(rgerrors.ErrInsufficientFunds, "sender balance insufficient")
 		}
 		senderBal.Sub(senderBal, t.Value)
-		receiverBal := readBalance(b, t.ReceiverPubKey)
+		receiverBal := readBalance(bb, t.ReceiverPubKey)
 		receiverBal.Add(receiverBal, t.Value)
-		if err := writeBalance(b, t.SenderPubKey, senderBal); err != nil {
+
+		if err := writeBalance(bb, t.SenderPubKey, senderBal); err != nil {
 			return err
 		}
-		return writeBalance(b, t.ReceiverPubKey, receiverBal)
+		if err := writeBalance(bb, t.ReceiverPubKey, receiverBal); err != nil {
+			return err
+		}
+
+		nonceBuf := make([]byte, 8)
+		binary.BigEndian.PutUint64(nonceBuf, t.Nonce)
+		return nb.Put(t.SenderPubKey[:], nonceBuf)
 	})
 }
 

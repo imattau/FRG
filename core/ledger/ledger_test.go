@@ -16,6 +16,7 @@ func makeTx(t *testing.T, senderKP, receiverKP *keys.Keypair, value int64, nonce
 	t.Helper()
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	tr := &tx.Tx{
+		Type:           tx.TxTypeTransfer,
 		Sender:         "alice",
 		Receiver:       "bob",
 		Value:          new(big.Int).Mul(big.NewInt(value), scale),
@@ -264,6 +265,162 @@ func TestMoveValid(t *testing.T) {
 	}
 	if balB.Cmp(big.NewInt(500)) != 0 {
 		t.Fatalf("receiver balance: got %v want 500", balB)
+	}
+}
+
+func TestNonceOf(t *testing.T) {
+	l := openLedger(t)
+	kp, _ := keys.GenerateKeypair()
+
+	// unknown account → 0
+	n, err := l.NonceOf(kp.PublicKey)
+	if err != nil {
+		t.Fatalf("NonceOf: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("unknown account nonce: got %d want 0", n)
+	}
+}
+
+func TestNonceFirstTx(t *testing.T) {
+	l := openLedger(t)
+	senderKP, _ := keys.GenerateKeypair()
+	receiverKP, _ := keys.GenerateKeypair()
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	_ = l.Seed(senderKP.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+
+	tr := makeTx(t, senderKP, receiverKP, 100, 1)
+	if err := l.Transfer(tr); err != nil {
+		t.Fatalf("first tx nonce=1: %v", err)
+	}
+	n, _ := l.NonceOf(senderKP.PublicKey)
+	if n != 1 {
+		t.Fatalf("nonce after first tx: got %d want 1", n)
+	}
+}
+
+func TestNonceSequential(t *testing.T) {
+	l := openLedger(t)
+	senderKP, _ := keys.GenerateKeypair()
+	receiverKP, _ := keys.GenerateKeypair()
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	_ = l.Seed(senderKP.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+
+	tr1 := makeTx(t, senderKP, receiverKP, 100, 1)
+	if err := l.Transfer(tr1); err != nil {
+		t.Fatalf("tx1: %v", err)
+	}
+	tr2 := makeTx(t, senderKP, receiverKP, 100, 2)
+	if err := l.Transfer(tr2); err != nil {
+		t.Fatalf("tx2: %v", err)
+	}
+	n, _ := l.NonceOf(senderKP.PublicKey)
+	if n != 2 {
+		t.Fatalf("nonce after tx2: got %d want 2", n)
+	}
+}
+
+func TestNonceReplay(t *testing.T) {
+	l := openLedger(t)
+	senderKP, _ := keys.GenerateKeypair()
+	receiverKP, _ := keys.GenerateKeypair()
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	_ = l.Seed(senderKP.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+
+	tr := makeTx(t, senderKP, receiverKP, 100, 1)
+	if err := l.Transfer(tr); err != nil {
+		t.Fatalf("first tx: %v", err)
+	}
+
+	err := l.Transfer(tr)
+	if err == nil {
+		t.Fatal("expected error for replay, got nil")
+	}
+	var rge *rgerrors.RGError
+	if !errors.As(err, &rge) || rge.Code != rgerrors.ErrSequenceFault {
+		t.Fatalf("expected ERR_018, got %v", err)
+	}
+}
+
+func TestNonceGap(t *testing.T) {
+	l := openLedger(t)
+	senderKP, _ := keys.GenerateKeypair()
+	receiverKP, _ := keys.GenerateKeypair()
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	_ = l.Seed(senderKP.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+
+	tr := makeTx(t, senderKP, receiverKP, 100, 2) // skipped 1
+	err := l.Transfer(tr)
+	if err == nil {
+		t.Fatal("expected error for gap, got nil")
+	}
+	var rge *rgerrors.RGError
+	if !errors.As(err, &rge) || rge.Code != rgerrors.ErrSequenceFault {
+		t.Fatalf("expected ERR_018, got %v", err)
+	}
+}
+
+func TestNonceZeroRejected(t *testing.T) {
+	l := openLedger(t)
+	senderKP, _ := keys.GenerateKeypair()
+	receiverKP, _ := keys.GenerateKeypair()
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	_ = l.Seed(senderKP.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+
+	tr := makeTx(t, senderKP, receiverKP, 100, 0)
+	err := l.Transfer(tr)
+	if err == nil {
+		t.Fatal("expected error for nonce 0, got nil")
+	}
+	var rge *rgerrors.RGError
+	if !errors.As(err, &rge) || rge.Code != rgerrors.ErrSequenceFault {
+		t.Fatalf("expected ERR_018, got %v", err)
+	}
+}
+
+func TestNonceAtomicity(t *testing.T) {
+	l := openLedger(t)
+	senderKP, _ := keys.GenerateKeypair()
+	receiverKP, _ := keys.GenerateKeypair()
+	_ = l.Seed(senderKP.PublicKey, big.NewInt(50))
+
+	tr := makeTx(t, senderKP, receiverKP, 100, 1) // insufficient funds
+	err := l.Transfer(tr)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	n, _ := l.NonceOf(senderKP.PublicKey)
+	if n != 0 {
+		t.Fatalf("nonce advanced on failed transfer: got %d want 0", n)
+	}
+}
+
+func TestNonceIsolated(t *testing.T) {
+	l := openLedger(t)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	receiver, _ := keys.GenerateKeypair()
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	_ = l.Seed(kpA.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+	_ = l.Seed(kpB.PublicKey, new(big.Int).Mul(big.NewInt(1000), scale))
+
+	if err := l.Transfer(makeTx(t, kpA, receiver, 10, 1)); err != nil {
+		t.Fatalf("nA tx1: %v", err)
+	}
+	if err := l.Transfer(makeTx(t, kpA, receiver, 10, 2)); err != nil {
+		t.Fatalf("nA tx2: %v", err)
+	}
+	if err := l.Transfer(makeTx(t, kpB, receiver, 10, 1)); err != nil {
+		t.Fatalf("nB tx1: %v", err)
+	}
+
+	nA, _ := l.NonceOf(kpA.PublicKey)
+	nB, _ := l.NonceOf(kpB.PublicKey)
+	if nA != 2 {
+		t.Errorf("nA: got %d want 2", nA)
+	}
+	if nB != 1 {
+		t.Errorf("nB: got %d want 1", nB)
 	}
 }
 

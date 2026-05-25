@@ -15,6 +15,7 @@ import (
 )
 
 var pendingBucket = []byte("pending")
+var hashesBucket = []byte("hashes")
 
 type queue struct {
 	db  *bolt.DB
@@ -28,7 +29,10 @@ func openQueue(path string, kp *keys.Keypair) (*queue, error) {
 	}
 
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(pendingBucket)
+		if _, err := tx.CreateBucketIfNotExists(pendingBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(hashesBucket)
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -54,19 +58,35 @@ func deriveKey(kp *keys.Keypair) ([32]byte, error) {
 }
 
 func (q *queue) Enqueue(txBytes []byte) error {
+	h := sha256.Sum256(txBytes)
+
 	ciphertext, err := q.encrypt(txBytes)
 	if err != nil {
 		return err
 	}
 	return q.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(pendingBucket)
-		seq, err := b.NextSequence()
+		hb := tx.Bucket(hashesBucket)
+		if hb.Get(h[:]) != nil {
+			return nil // Already enqueued
+		}
+
+		pb := tx.Bucket(pendingBucket)
+		seq, err := pb.NextSequence()
 		if err != nil {
 			return err
 		}
 		key := make([]byte, 8)
 		binary.BigEndian.PutUint64(key, seq)
-		return b.Put(key, ciphertext)
+
+		// Store hash followed by ciphertext
+		val := make([]byte, 32+len(ciphertext))
+		copy(val[:32], h[:])
+		copy(val[32:], ciphertext)
+
+		if err := pb.Put(key, val); err != nil {
+			return err
+		}
+		return hb.Put(h[:], []byte{1})
 	})
 }
 
@@ -75,11 +95,14 @@ func (q *queue) Drain() ([][]byte, [][]byte, error) {
 	var txBytesSlice [][]byte
 	err := q.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(pendingBucket).ForEach(func(k, v []byte) error {
+			if len(v) < 32 {
+				return nil
+			}
 			keyCopy := make([]byte, len(k))
 			copy(keyCopy, k)
 			dbKeys = append(dbKeys, keyCopy)
 
-			plain, err := q.decrypt(v)
+			plain, err := q.decrypt(v[32:])
 			if err != nil {
 				return err
 			}
@@ -92,9 +115,14 @@ func (q *queue) Drain() ([][]byte, [][]byte, error) {
 
 func (q *queue) DeleteKeys(dbKeys [][]byte) error {
 	return q.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(pendingBucket)
+		pb := tx.Bucket(pendingBucket)
+		hb := tx.Bucket(hashesBucket)
 		for _, k := range dbKeys {
-			if err := b.Delete(k); err != nil {
+			v := pb.Get(k)
+			if len(v) >= 32 {
+				_ = hb.Delete(v[:32])
+			}
+			if err := pb.Delete(k); err != nil {
 				return err
 			}
 		}
