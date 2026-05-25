@@ -20,6 +20,7 @@ const (
 	topicTx    = "frg/tx/v1"
 	topicBatch = "frg/batch/v1"
 	topicBlock = "frg/block/v1"
+	topicVote  = "frg/vote/v1"
 )
 
 // Config holds node configuration.
@@ -37,11 +38,14 @@ type Node struct {
 	txTopic    *pubsub.Topic
 	batchTopic *pubsub.Topic
 	blockTopic *pubsub.Topic
+	voteTopic  *pubsub.Topic
 	txSub      *pubsub.Subscription
 	batchSub   *pubsub.Subscription
 	blockSub   *pubsub.Subscription
+	voteSub    *pubsub.Subscription
 	txCh       chan *tx.Tx
 	blockCh    chan []byte
+	voteCh     chan []byte
 	cancel     context.CancelFunc
 }
 
@@ -97,6 +101,12 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		h.Close()
 		return nil, fmt.Errorf("join block topic: %w", err)
 	}
+	voteTopic, err := ps.Join(topicVote)
+	if err != nil {
+		cancel()
+		h.Close()
+		return nil, fmt.Errorf("join vote topic: %w", err)
+	}
 
 	txSub, err := txTopic.Subscribe(pubsub.WithBufferSize(8192))
 	if err != nil {
@@ -116,6 +126,12 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		h.Close()
 		return nil, fmt.Errorf("subscribe block: %w", err)
 	}
+	voteSub, err := voteTopic.Subscribe(pubsub.WithBufferSize(4096))
+	if err != nil {
+		cancel()
+		h.Close()
+		return nil, fmt.Errorf("subscribe vote: %w", err)
+	}
 
 	n := &Node{
 		host:       h,
@@ -123,17 +139,21 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		txTopic:    txTopic,
 		batchTopic: batchTopic,
 		blockTopic: blockTopic,
+		voteTopic:  voteTopic,
 		txSub:      txSub,
 		batchSub:   batchSub,
 		blockSub:   blockSub,
+		voteSub:    voteSub,
 		txCh:       make(chan *tx.Tx, 16384),
 		blockCh:    make(chan []byte, 16),
+		voteCh:     make(chan []byte, 1024),
 		cancel:     cancel,
 	}
 
 	go n.readTxs(innerCtx)
 	go n.readBatches(innerCtx)
 	go n.readBlocks(innerCtx)
+	go n.readVotes(innerCtx)
 
 	if len(cfg.BootstrapPeers) > 0 {
 		kad, err := dht.New(innerCtx, h, dht.ProtocolPrefix("/frg/kad/v1"))
@@ -166,6 +186,7 @@ func (n *Node) Close() error {
 	n.txSub.Cancel()
 	n.batchSub.Cancel()
 	n.blockSub.Cancel()
+	n.voteSub.Cancel()
 	if n.dht != nil {
 		n.dht.Close()
 	}
@@ -199,6 +220,11 @@ func (n *Node) BroadcastBlockHeader(header []byte) error {
 	return n.blockTopic.Publish(context.Background(), header)
 }
 
+// BroadcastVote gossips a serialised vote on frg/vote/v1.
+func (n *Node) BroadcastVote(vote []byte) error {
+	return n.voteTopic.Publish(context.Background(), vote)
+}
+
 // SubscribeTxs returns a channel of valid incoming transactions.
 func (n *Node) SubscribeTxs() <-chan *tx.Tx {
 	return n.txCh
@@ -207,6 +233,11 @@ func (n *Node) SubscribeTxs() <-chan *tx.Tx {
 // SubscribeBlockHeaders returns a channel of valid incoming block headers.
 func (n *Node) SubscribeBlockHeaders() <-chan []byte {
 	return n.blockCh
+}
+
+// SubscribeVotes returns a channel of incoming votes.
+func (n *Node) SubscribeVotes() <-chan []byte {
+	return n.voteCh
 }
 
 // PeerCount returns the number of currently connected peers.
@@ -291,6 +322,25 @@ func (n *Node) readBlocks(ctx context.Context) {
 		copy(hdr, msg.Data)
 		select {
 		case n.blockCh <- hdr:
+		default:
+		}
+	}
+}
+
+func (n *Node) readVotes(ctx context.Context) {
+	for {
+		msg, err := n.voteSub.Next(ctx)
+		if err != nil {
+			return
+		}
+		// Votes are 141 bytes fixed-width
+		if len(msg.Data) != 141 {
+			continue
+		}
+		vote := make([]byte, 141)
+		copy(vote, msg.Data)
+		select {
+		case n.voteCh <- vote:
 		default:
 		}
 	}

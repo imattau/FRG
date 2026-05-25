@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	bolt "go.etcd.io/bbolt"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
@@ -439,5 +440,31 @@ func TestMoveInsufficientFunds(t *testing.T) {
 	var rge *rgerrors.RGError
 	if !errors.As(err, &rge) || rge.Code != rgerrors.ErrInsufficientFunds {
 		t.Fatalf("expected ERR_013, got %v", err)
+	}
+}
+
+func TestLedgerNew(t *testing.T) {
+	dir := t.TempDir()
+	db, err := bolt.Open(filepath.Join(dir, "shared.db"), 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var acct [32]byte
+	acct[0] = 1
+	if err := l.Seed(acct, big.NewInt(100)); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	bal, err := l.BalanceOf(acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("want 100, got %s", bal)
 	}
 }

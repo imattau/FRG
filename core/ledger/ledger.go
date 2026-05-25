@@ -19,12 +19,9 @@ type Ledger struct {
 	db *bolt.DB
 }
 
-// Open opens or creates a ledger database at path.
-func Open(path string) (*Ledger, error) {
-	db, err := bolt.Open(path, 0600, nil)
-	if err != nil {
-		return nil, err
-	}
+// New creates a Ledger using an existing shared *bolt.DB.
+// The caller owns the DB lifecycle.
+func New(db *bolt.DB) (*Ledger, error) {
 	if err := db.Update(func(btx *bolt.Tx) error {
 		if _, err := btx.CreateBucketIfNotExists(balancesBucket); err != nil {
 			return err
@@ -32,10 +29,23 @@ func Open(path string) (*Ledger, error) {
 		_, err := btx.CreateBucketIfNotExists(noncesBucket)
 		return err
 	}); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
 	return &Ledger{db: db}, nil
+}
+
+// Open opens or creates a ledger database at path.
+func Open(path string) (*Ledger, error) {
+	db, err := bolt.Open(path, 0600, nil)
+	if err != nil {
+		return nil, err
+	}
+	l, err := New(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return l, nil
 }
 
 // Close closes the underlying database.
@@ -85,37 +95,43 @@ func (l *Ledger) Transfer(t *tx.Tx) error {
 		return err
 	}
 	return l.db.Update(func(btx *bolt.Tx) error {
-		nb := btx.Bucket(noncesBucket)
-		var storedNonce uint64
-		v := nb.Get(t.SenderPubKey[:])
-		if v != nil {
-			storedNonce = binary.BigEndian.Uint64(v)
-		}
-
-		if t.Nonce != storedNonce+1 {
-			return rgerrors.Newf(rgerrors.ErrSequenceFault, "expected nonce %d, got %d", storedNonce+1, t.Nonce)
-		}
-
-		bb := btx.Bucket(balancesBucket)
-		senderBal := readBalance(bb, t.SenderPubKey)
-		if senderBal.Cmp(t.Value) < 0 {
-			return rgerrors.New(rgerrors.ErrInsufficientFunds, "sender balance insufficient")
-		}
-		senderBal.Sub(senderBal, t.Value)
-		receiverBal := readBalance(bb, t.ReceiverPubKey)
-		receiverBal.Add(receiverBal, t.Value)
-
-		if err := writeBalance(bb, t.SenderPubKey, senderBal); err != nil {
-			return err
-		}
-		if err := writeBalance(bb, t.ReceiverPubKey, receiverBal); err != nil {
-			return err
-		}
-
-		nonceBuf := make([]byte, 8)
-		binary.BigEndian.PutUint64(nonceBuf, t.Nonce)
-		return nb.Put(t.SenderPubKey[:], nonceBuf)
+		return l.TransferTx(btx, t)
 	})
+}
+
+// TransferTx applies a transaction within an existing bolt transaction.
+// Caller is responsible for signature verification.
+func (l *Ledger) TransferTx(btx *bolt.Tx, t *tx.Tx) error {
+	nb := btx.Bucket(noncesBucket)
+	var storedNonce uint64
+	v := nb.Get(t.SenderPubKey[:])
+	if v != nil {
+		storedNonce = binary.BigEndian.Uint64(v)
+	}
+
+	if t.Nonce != storedNonce+1 {
+		return rgerrors.Newf(rgerrors.ErrSequenceFault, "expected nonce %d, got %d", storedNonce+1, t.Nonce)
+	}
+
+	bb := btx.Bucket(balancesBucket)
+	senderBal := readBalance(bb, t.SenderPubKey)
+	if senderBal.Cmp(t.Value) < 0 {
+		return rgerrors.New(rgerrors.ErrInsufficientFunds, "sender balance insufficient")
+	}
+	senderBal.Sub(senderBal, t.Value)
+	receiverBal := readBalance(bb, t.ReceiverPubKey)
+	receiverBal.Add(receiverBal, t.Value)
+
+	if err := writeBalance(bb, t.SenderPubKey, senderBal); err != nil {
+		return err
+	}
+	if err := writeBalance(bb, t.ReceiverPubKey, receiverBal); err != nil {
+		return err
+	}
+
+	nonceBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(nonceBuf, t.Nonce)
+	return nb.Put(t.SenderPubKey[:], nonceBuf)
 }
 
 // Burn destroys amount quanta from account's balance.
@@ -125,14 +141,19 @@ func (l *Ledger) Burn(account [32]byte, amount *big.Int) error {
 		return err
 	}
 	return l.db.Update(func(btx *bolt.Tx) error {
-		b := btx.Bucket(balancesBucket)
-		bal := readBalance(b, account)
-		if bal.Cmp(amount) < 0 {
-			return rgerrors.New(rgerrors.ErrInsufficientFunds, "insufficient balance to burn")
-		}
-		bal.Sub(bal, amount)
-		return writeBalance(b, account, bal)
+		return l.BurnTx(btx, account, amount)
 	})
+}
+
+// BurnTx destroys quanta within an existing bolt transaction.
+func (l *Ledger) BurnTx(btx *bolt.Tx, account [32]byte, amount *big.Int) error {
+	b := btx.Bucket(balancesBucket)
+	bal := readBalance(b, account)
+	if bal.Cmp(amount) < 0 {
+		return rgerrors.New(rgerrors.ErrInsufficientFunds, "insufficient balance to burn")
+	}
+	bal.Sub(bal, amount)
+	return writeBalance(b, account, bal)
 }
 
 // Move atomically debits from and credits to by amount.
@@ -165,8 +186,13 @@ func (l *Ledger) Seed(account [32]byte, amount *big.Int) error {
 		return err
 	}
 	return l.db.Update(func(btx *bolt.Tx) error {
-		return writeBalance(btx.Bucket(balancesBucket), account, amount)
+		return l.SeedTx(btx, account, amount)
 	})
+}
+
+// SeedTx sets an account balance within an existing bolt transaction.
+func (l *Ledger) SeedTx(btx *bolt.Tx, account [32]byte, amount *big.Int) error {
+	return writeBalance(btx.Bucket(balancesBucket), account, amount)
 }
 
 func readBalance(b *bolt.Bucket, account [32]byte) *big.Int {

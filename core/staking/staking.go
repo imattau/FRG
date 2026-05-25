@@ -52,20 +52,29 @@ type Store struct {
 	ledger *ledger.Ledger
 }
 
+// New creates a Store using an existing shared *bolt.DB.
+func New(db *bolt.DB, l *ledger.Ledger) (*Store, error) {
+	if err := db.Update(func(btx *bolt.Tx) error {
+		_, err := btx.CreateBucketIfNotExists(validatorsBucket)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return &Store{db: db, ledger: l}, nil
+}
+
 // Open opens or creates a staking database at path.
 func Open(path string, l *ledger.Ledger) (*Store, error) {
 	db, err := bolt.Open(path, 0600, nil)
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Update(func(btx *bolt.Tx) error {
-		_, err := btx.CreateBucketIfNotExists(validatorsBucket)
-		return err
-	}); err != nil {
+	s, err := New(db, l)
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db, ledger: l}, nil
+	return s, nil
 }
 
 // Close closes the underlying database.
@@ -212,37 +221,49 @@ func (s *Store) BondedAmounts() ([][32]byte, []*big.Int, error) {
 // the counter to 0. Returns ERR_015 if validator is not BONDED or UNBONDING.
 // Returns the miss count after increment (0 if reset after slash).
 func (s *Store) RecordMiss(validatorPubKey [32]byte) (uint64, error) {
-	rec, err := s.readRecord(validatorPubKey)
-	if err != nil {
-		return 0, err
-	}
-	if rec == nil || rec.State == 0 {
-		return 0, rgerrors.New(rgerrors.ErrNotBonded, "validator not bonded")
-	}
-
-	rec.MissCount++
-
-	if rec.MissCount >= MissThreshold {
-		slashAmount := new(big.Int).Mul(rec.BondedAmount, big.NewInt(int64(SlashPercent)))
-		slashAmount.Div(slashAmount, big.NewInt(100))
-
-		escrow := escrowAccount(validatorPubKey)
-		if err := s.ledger.Burn(escrow, slashAmount); err != nil {
-			return 0, err
+	var count uint64
+	var slashAmt *big.Int
+	err := s.db.Update(func(btx *bolt.Tx) error {
+		c, sa, err := s.RecordMissTx(btx, validatorPubKey)
+		if err != nil {
+			return err
 		}
-
-		rec.BondedAmount.Sub(rec.BondedAmount, slashAmount)
-		rec.MissCount = 0
-	}
-
-	err = s.db.Update(func(btx *bolt.Tx) error {
-		return putRecord(btx.Bucket(validatorsBucket), validatorPubKey, *rec)
+		count = c
+		slashAmt = sa
+		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
 
-	return rec.MissCount, nil
+	if slashAmt.Sign() > 0 {
+		escrow := EscrowAccount(validatorPubKey)
+		if err := s.ledger.Burn(escrow, slashAmt); err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
+// RecordMissTx increments a validator's miss count inside an existing transaction.
+// Returns (newCount, slashAmount, nil) where slashAmount > 0 if a slash occurred.
+// The caller is responsible for burning slashAmount from the escrow account.
+func (s *Store) RecordMissTx(btx *bolt.Tx, validatorPubKey [32]byte) (uint64, *big.Int, error) {
+	b := btx.Bucket(validatorsBucket)
+	rec := getRecord(b, validatorPubKey)
+	if rec == nil || rec.State == 0 {
+		return 0, nil, rgerrors.New(rgerrors.ErrNotBonded, "validator not bonded")
+	}
+
+	rec.MissCount++
+	slashAmount := big.NewInt(0)
+	if rec.MissCount >= MissThreshold {
+		slashAmount = new(big.Int).Mul(rec.BondedAmount, big.NewInt(int64(SlashPercent)))
+		slashAmount.Div(slashAmount, big.NewInt(100))
+		rec.BondedAmount.Sub(rec.BondedAmount, slashAmount)
+		rec.MissCount = 0
+	}
+	return rec.MissCount, slashAmount, putRecord(b, validatorPubKey, *rec)
 }
 
 // MissCountOf returns the current miss counter for a validator.
@@ -265,6 +286,11 @@ func (s *Store) readRecord(validator [32]byte) (*record, error) {
 		return nil
 	})
 	return rec, err
+}
+
+// EscrowAccount returns the escrow address for a validator. Exported for state machine use.
+func EscrowAccount(validator [32]byte) [32]byte {
+	return escrowAccount(validator)
 }
 
 func escrowAccount(validator [32]byte) [32]byte {

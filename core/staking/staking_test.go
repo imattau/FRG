@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	bolt "go.etcd.io/bbolt"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
@@ -342,4 +343,23 @@ func TestPersistence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestStakingNew(t *testing.T) {
+	dir := t.TempDir()
+	db, err := bolt.Open(filepath.Join(dir, "shared.db"), 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := staking.New(db, l)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_ = s
 }

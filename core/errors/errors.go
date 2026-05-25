@@ -25,6 +25,7 @@ const (
 	ErrSequenceFault               ErrorCode = "ERR_018"
 	ErrInvalidTxType               ErrorCode = "ERR_019"
 	ErrEmptyValidatorSet           ErrorCode = "ERR_020"
+	ErrBlockHeightSequenceFault    ErrorCode = "ERR_021"
 )
 
 type RGError struct {
