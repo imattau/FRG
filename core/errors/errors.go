@@ -17,6 +17,7 @@ const (
 	ErrDosSizeExceeded             ErrorCode = "ERR_010"
 	ErrRootMismatch                ErrorCode = "ERR_011"
 	ErrInvalidSignature            ErrorCode = "ERR_012"
+	ErrInsufficientFunds           ErrorCode = "ERR_013"
 )
 
 type RGError struct {
