@@ -15,6 +15,8 @@ import (
 const (
 	MinBond         = int64(1000)
 	UnbondingBlocks = uint64(1000)
+	MissThreshold   = uint64(5)
+	SlashPercent    = uint64(10)
 )
 
 const (
@@ -41,6 +43,7 @@ type record struct {
 	BondedAmount     *big.Int
 	BondedAtBlock    uint64
 	UnbondingAtBlock uint64
+	MissCount        uint64
 }
 
 // Store is a bbolt-backed staking state store.
@@ -204,6 +207,57 @@ func (s *Store) BondedAmounts() ([][32]byte, []*big.Int, error) {
 	return validatorSet, bondedAmounts, err
 }
 
+// RecordMiss increments the miss counter for the validator. If MissCount reaches
+// MissThreshold (5), burns SlashPercent (10%) of the bond from escrow and resets
+// the counter to 0. Returns ERR_015 if validator is not BONDED or UNBONDING.
+// Returns the miss count after increment (0 if reset after slash).
+func (s *Store) RecordMiss(validatorPubKey [32]byte) (uint64, error) {
+	rec, err := s.readRecord(validatorPubKey)
+	if err != nil {
+		return 0, err
+	}
+	if rec == nil || rec.State == 0 {
+		return 0, rgerrors.New(rgerrors.ErrNotBonded, "validator not bonded")
+	}
+
+	rec.MissCount++
+
+	if rec.MissCount >= MissThreshold {
+		slashAmount := new(big.Int).Mul(rec.BondedAmount, big.NewInt(int64(SlashPercent)))
+		slashAmount.Div(slashAmount, big.NewInt(100))
+
+		escrow := escrowAccount(validatorPubKey)
+		if err := s.ledger.Burn(escrow, slashAmount); err != nil {
+			return 0, err
+		}
+
+		rec.BondedAmount.Sub(rec.BondedAmount, slashAmount)
+		rec.MissCount = 0
+	}
+
+	err = s.db.Update(func(btx *bolt.Tx) error {
+		return putRecord(btx.Bucket(validatorsBucket), validatorPubKey, *rec)
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return rec.MissCount, nil
+}
+
+// MissCountOf returns the current miss counter for a validator.
+// Returns 0 for unknown validators (no error).
+func (s *Store) MissCountOf(validatorPubKey [32]byte) (uint64, error) {
+	rec, err := s.readRecord(validatorPubKey)
+	if err != nil {
+		return 0, err
+	}
+	if rec == nil {
+		return 0, nil
+	}
+	return rec.MissCount, nil
+}
+
 func (s *Store) readRecord(validator [32]byte) (*record, error) {
 	var rec *record
 	err := s.db.View(func(btx *bolt.Tx) error {
@@ -223,22 +277,27 @@ func escrowAccount(validator [32]byte) [32]byte {
 }
 
 func encodeRecord(r record) []byte {
-	buf := make([]byte, 49)
+	buf := make([]byte, 57)
 	buf[0] = r.State
 	amountBytes := r.BondedAmount.Bytes()
 	copy(buf[1+32-len(amountBytes):33], amountBytes)
 	binary.BigEndian.PutUint64(buf[33:41], r.BondedAtBlock)
 	binary.BigEndian.PutUint64(buf[41:49], r.UnbondingAtBlock)
+	binary.BigEndian.PutUint64(buf[49:57], r.MissCount)
 	return buf
 }
 
 func decodeRecord(buf []byte) record {
-	return record{
+	rec := record{
 		State:            buf[0],
 		BondedAmount:     new(big.Int).SetBytes(buf[1:33]),
 		BondedAtBlock:    binary.BigEndian.Uint64(buf[33:41]),
 		UnbondingAtBlock: binary.BigEndian.Uint64(buf[41:49]),
 	}
+	if len(buf) >= 57 {
+		rec.MissCount = binary.BigEndian.Uint64(buf[49:57])
+	}
+	return rec
 }
 
 func getRecord(b *bolt.Bucket, validator [32]byte) *record {

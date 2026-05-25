@@ -22,6 +22,9 @@ const (
 	ErrNotBonded                   ErrorCode = "ERR_015"
 	ErrUnbondingPending            ErrorCode = "ERR_016"
 	ErrBondBelowMinimum            ErrorCode = "ERR_017"
+	ErrSequenceFault               ErrorCode = "ERR_018"
+	ErrInvalidTxType               ErrorCode = "ERR_019"
+	ErrEmptyValidatorSet           ErrorCode = "ERR_020"
 )
 
 type RGError struct {
