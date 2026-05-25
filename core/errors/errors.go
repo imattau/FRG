@@ -18,6 +18,10 @@ const (
 	ErrRootMismatch                ErrorCode = "ERR_011"
 	ErrInvalidSignature            ErrorCode = "ERR_012"
 	ErrInsufficientFunds           ErrorCode = "ERR_013"
+	ErrAlreadyBonded               ErrorCode = "ERR_014"
+	ErrNotBonded                   ErrorCode = "ERR_015"
+	ErrUnbondingPending            ErrorCode = "ERR_016"
+	ErrBondBelowMinimum            ErrorCode = "ERR_017"
 )
 
 type RGError struct {

@@ -1,6 +1,7 @@
 package ledger_test
 
 import (
+	"errors"
 	"math/big"
 	"path/filepath"
 	"testing"
@@ -241,5 +242,45 @@ func TestLedgerPersistence(t *testing.T) {
 	}
 	if bal.Cmp(want) != 0 {
 		t.Errorf("after reopen: got %s, want %s", bal, want)
+	}
+}
+
+func TestMoveValid(t *testing.T) {
+	l := openLedger(t)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	seed := big.NewInt(2000)
+	if err := l.Seed(kpA.PublicKey, seed); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.Move(kpA.PublicKey, kpB.PublicKey, big.NewInt(500)); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	balA, _ := l.BalanceOf(kpA.PublicKey)
+	balB, _ := l.BalanceOf(kpB.PublicKey)
+	if balA.Cmp(big.NewInt(1500)) != 0 {
+		t.Fatalf("sender balance: got %v want 1500", balA)
+	}
+	if balB.Cmp(big.NewInt(500)) != 0 {
+		t.Fatalf("receiver balance: got %v want 500", balB)
+	}
+}
+
+func TestMoveInsufficientFunds(t *testing.T) {
+	l := openLedger(t)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	if err := l.Seed(kpA.PublicKey, big.NewInt(100)); err != nil {
+		t.Fatal(err)
+	}
+
+	err := l.Move(kpA.PublicKey, kpB.PublicKey, big.NewInt(500))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var rge *rgerrors.RGError
+	if !errors.As(err, &rge) || rge.Code != rgerrors.ErrInsufficientFunds {
+		t.Fatalf("expected ERR_013, got %v", err)
 	}
 }

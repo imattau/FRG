@@ -98,6 +98,29 @@ func (l *Ledger) Burn(account [32]byte, amount *big.Int) error {
 	})
 }
 
+// Move atomically debits from and credits to by amount.
+// For internal protocol use only - no sig verification.
+// Returns ERR_013 if from balance < amount, ERR_001 on overflow.
+func (l *Ledger) Move(from, to [32]byte, amount *big.Int) error {
+	if err := validateUint256(amount, "move amount"); err != nil {
+		return err
+	}
+	return l.db.Update(func(btx *bolt.Tx) error {
+		b := btx.Bucket(balancesBucket)
+		fromBal := readBalance(b, from)
+		if fromBal.Cmp(amount) < 0 {
+			return rgerrors.New(rgerrors.ErrInsufficientFunds, "insufficient balance to move")
+		}
+		fromBal.Sub(fromBal, amount)
+		toBal := readBalance(b, to)
+		toBal.Add(toBal, amount)
+		if err := writeBalance(b, from, fromBal); err != nil {
+			return err
+		}
+		return writeBalance(b, to, toBal)
+	})
+}
+
 // Seed sets an account balance directly. Used for genesis and testing only.
 // Does not enforce any supply constraints.
 func (l *Ledger) Seed(account [32]byte, amount *big.Int) error {
