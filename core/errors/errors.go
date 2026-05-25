@@ -16,6 +16,7 @@ const (
 	ErrCanonicalEncodingDistortion ErrorCode = "ERR_009"
 	ErrDosSizeExceeded             ErrorCode = "ERR_010"
 	ErrRootMismatch                ErrorCode = "ERR_011"
+	ErrInvalidSignature            ErrorCode = "ERR_012"
 )
 
 type RGError struct {

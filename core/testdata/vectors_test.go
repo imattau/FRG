@@ -64,8 +64,8 @@ func TestTxSerializeKnownVector(t *testing.T) {
 	if hex.EncodeToString(b[:6]) != "54585f563100" {
 		t.Fatalf("wrong TX domain prefix: %x", b[:6])
 	}
-	if len(b) != 58 {
-		t.Fatalf("expected 58 bytes, got %d", len(b))
+	if len(b) != 250 {
+		t.Fatalf("expected 250 bytes, got %d", len(b))
 	}
 }
 
