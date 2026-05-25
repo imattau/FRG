@@ -148,7 +148,7 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 
 		// 4. Mint block reward to proposer.
 		if mintAmount.Sign() > 0 {
-			if err := sm.ledger.SeedTx(btx, b.ProposerPubKey, mintAmount); err != nil {
+			if err := sm.ledger.CreditTx(btx, b.ProposerPubKey, mintAmount); err != nil {
 				return err
 			}
 		}

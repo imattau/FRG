@@ -195,6 +195,14 @@ func (l *Ledger) SeedTx(btx *bolt.Tx, account [32]byte, amount *big.Int) error {
 	return writeBalance(btx.Bucket(balancesBucket), account, amount)
 }
 
+// CreditTx adds amount to account's existing balance within an existing bolt transaction.
+func (l *Ledger) CreditTx(btx *bolt.Tx, account [32]byte, amount *big.Int) error {
+	b := btx.Bucket(balancesBucket)
+	cur := readBalance(b, account)
+	next := new(big.Int).Add(cur, amount)
+	return writeBalance(b, account, next)
+}
+
 func readBalance(b *bolt.Bucket, account [32]byte) *big.Int {
 	v := b.Get(account[:])
 	if v == nil {

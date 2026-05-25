@@ -1,6 +1,7 @@
 package consensus
 
 import (
+    "bytes"
     "encoding/binary"
     "errors"
     "fmt"
@@ -87,17 +88,101 @@ type BlockProposal struct {
     ProposerSig      [64]byte        // Ed25519 sig over H(FRG_PROPOSAL_V1\x00 ∥ serialised fields excl. sig)
 }
 
-// ProposalSignBytes returns the bytes to be signed for a block proposal.
+// ProposalSignBytes returns the bytes signed by the proposer.
+// Covers all fields except ProposerSig itself.
 func ProposalSignBytes(p *BlockProposal) []byte {
-    // This is a simplified version; real implementation would serialise all fields.
-    // The spec says: FRG_PROPOSAL_V1\x00 ∥ serialised fields excl. sig
-    buf := make([]byte, 16+8+4+32)
-    copy(buf[0:16], "FRG_PROPOSAL_V1\x00")
-    binary.BigEndian.PutUint64(buf[16:24], p.Height)
-    binary.BigEndian.PutUint32(buf[24:28], p.Round)
-    copy(buf[28:60], p.ProposerPK[:])
-    // Note: Txs and PrevAttestations would be added here in a full implementation.
-    return buf
+	body, _ := serializeProposalBody(p)
+	prefix := []byte("FRG_PROPOSAL_V1\x00")
+	out := make([]byte, len(prefix)+len(body))
+	copy(out, prefix)
+	copy(out[len(prefix):], body)
+	return out
+}
+
+// SerializeProposal serialises a complete BlockProposal for broadcast.
+func SerializeProposal(p *BlockProposal) ([]byte, error) {
+	body, err := serializeProposalBody(p)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 64+len(body))
+	copy(out[:64], p.ProposerSig[:])
+	copy(out[64:], body)
+	return out, nil
+}
+
+// DeserializeProposal parses a serialised BlockProposal.
+func DeserializeProposal(data []byte) (*BlockProposal, error) {
+	if len(data) < 64+8+4+32+8+4+32+4 {
+		return nil, fmt.Errorf("proposal too short")
+	}
+	p := &BlockProposal{}
+	copy(p.ProposerSig[:], data[:64])
+	body := data[64:]
+	off := 0
+	p.Height = binary.BigEndian.Uint64(body[off:]); off += 8
+	p.Round = binary.BigEndian.Uint32(body[off:]); off += 4
+	copy(p.ProposerPK[:], body[off:]); off += 32
+	// attestation
+	p.PrevAttestations.Height = binary.BigEndian.Uint64(body[off:]); off += 8
+	p.PrevAttestations.Round = binary.BigEndian.Uint32(body[off:]); off += 4
+	copy(p.PrevAttestations.BlockHash[:], body[off:]); off += 32
+	voteCount := int(binary.BigEndian.Uint32(body[off:])); off += 4
+	p.PrevAttestations.Votes = make([]Vote, voteCount)
+	for i := range p.PrevAttestations.Votes {
+		if off+141 > len(body) {
+			return nil, fmt.Errorf("truncated vote at index %d", i)
+		}
+		v, err := DeserializeVote(body[off : off+141])
+		if err != nil {
+			return nil, err
+		}
+		p.PrevAttestations.Votes[i] = *v
+		off += 141
+	}
+	// txs
+	if off+4 > len(body) {
+		return nil, fmt.Errorf("missing tx count")
+	}
+	_ = binary.BigEndian.Uint32(body[off:]); off += 4
+	if off < len(body) {
+		txs, err := tx.DeserializeBatch(body[off:])
+		if err != nil {
+			return nil, err
+		}
+		p.Txs = txs
+	}
+	return p, nil
+}
+
+// serializeProposalBody serialises all fields except ProposerSig.
+func serializeProposalBody(p *BlockProposal) ([]byte, error) {
+	var buf bytes.Buffer
+	var tmp8 [8]byte
+	var tmp4 [4]byte
+	binary.BigEndian.PutUint64(tmp8[:], p.Height); buf.Write(tmp8[:])
+	binary.BigEndian.PutUint32(tmp4[:], p.Round); buf.Write(tmp4[:])
+	buf.Write(p.ProposerPK[:])
+	binary.BigEndian.PutUint64(tmp8[:], p.PrevAttestations.Height); buf.Write(tmp8[:])
+	binary.BigEndian.PutUint32(tmp4[:], p.PrevAttestations.Round); buf.Write(tmp4[:])
+	buf.Write(p.PrevAttestations.BlockHash[:])
+	binary.BigEndian.PutUint32(tmp4[:], uint32(len(p.PrevAttestations.Votes))); buf.Write(tmp4[:])
+	for _, v := range p.PrevAttestations.Votes {
+		vb, err := v.Serialize()
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(vb)
+	}
+	binary.BigEndian.PutUint32(tmp4[:], uint32(len(p.Txs))); buf.Write(tmp4[:])
+	if len(p.Txs) > 0 {
+		txBytes, err := tx.SerializeBatch(p.Txs)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(txBytes)
+	}
+	return buf.Bytes(), nil
 }
 
 type AttestationSet struct {

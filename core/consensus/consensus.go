@@ -186,22 +186,21 @@ func (e *Engine) prevStateRoot() [32]byte {
 }
 
 func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
-    // Block production (tx selection) is handled by the block production loop.
-    // For now, the engine broadcasts an empty proposal to drive the round.
     p := &BlockProposal{
         Height:     rs.Height,
         Round:      rs.Round,
         ProposerPK: e.kp.PublicKey,
     }
-    body := ProposalSignBytes(p)
-    sig, err := e.kp.Sign(body)
+    sig, err := e.kp.Sign(ProposalSignBytes(p))
     if err != nil {
         return
     }
     p.ProposerSig = sig
-    // Serialise and broadcast via block topic (reuses existing BroadcastBlockHeader path
-    // until block production loop provides full serialisation).
-    _ = p // block production loop will wire this fully
+    data, err := SerializeProposal(p)
+    if err != nil {
+        return
+    }
+    _ = e.p2p.BroadcastBlockHeader(data)
 }
 
 func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stakes []*big.Int,
@@ -371,8 +370,12 @@ func (e *Engine) quorumBlock(votes map[[32]byte]Vote, validators [][32]byte, sta
 }
 
 func (e *Engine) parseProposal(raw []byte) *BlockProposal {
-    // Block production loop will provide full proposal deserialisation.
-    // For now, return nil to skip unknown formats.
-    _ = raw
-    return nil
+    p, err := DeserializeProposal(raw)
+    if err != nil {
+        return nil
+    }
+    if !keys.Verify(p.ProposerPK, ProposalSignBytes(p), p.ProposerSig) {
+        return nil
+    }
+    return p
 }
