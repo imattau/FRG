@@ -85,7 +85,15 @@ Bottom-up, deterministic:
 - Empty block node: `child_count = 1`.
 
 ### Signature Recomputation (Mandatory — ERR_007 if mismatch)
-The validator must independently derive the signature from raw volume/variance fields. The node's declared byte is untrusted.
+The validator must independently derive the signature from raw volume/variance/count fields. The node's declared byte is untrusted.
+
+Derivation rules (applied in order):
+1. **NULL_PAD** — all children are canonical `NULL_Λ` roots, Volume=0, Variance=0, Count=0
+2. **ATOMIC** — Scale=1, child is a txid (not the empty block sentinel)
+3. **STAGNANT_STATE** — Volume=0 and Variance=0 (no active txs in subtree)
+4. **LAMINAR_FLOW** — Variance=0 (uniform values)
+5. **VOLATILE_SHOCK** — CV² > 4: `Variance > 4 × (Volume / Count)²` (high relative dispersion)
+6. **LAMINAR_FLOW** — default
 
 ### Volume & Variance
 - **Volume** = sum of all active (non-null) transaction values at the leaf level, propagated up.

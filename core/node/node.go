@@ -191,8 +191,16 @@ func deriveSignature(n *RGNode) Signature {
 	if n.Variance != nil && n.Variance.Cmp(zero) == 0 {
 		return SigLaminarFlow
 	}
-	if n.Volume != nil && n.Variance != nil && n.Variance.Cmp(n.Volume) > 0 {
-		return SigVolatileShock
+	// VOLATILE_SHOCK if CV² > 4: variance > 4 * mean²
+	// mean = volume / count (floor); threshold = 4 * mean²
+	if n.Volume != nil && n.Variance != nil && n.Count > 0 {
+		count := new(big.Int).SetUint64(n.Count)
+		mean := new(big.Int).Div(n.Volume, count)
+		threshold := new(big.Int).Mul(mean, mean)
+		threshold.Mul(threshold, big.NewInt(4))
+		if n.Variance.Cmp(threshold) > 0 {
+			return SigVolatileShock
+		}
 	}
 	return SigLaminarFlow
 }

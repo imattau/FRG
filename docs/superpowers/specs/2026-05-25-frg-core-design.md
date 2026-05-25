@@ -134,8 +134,16 @@ func (n *RGNode) Serialize() ([]byte, error)
 // Root returns node_root = H(Node_Bytes).
 func (n *RGNode) Root() ([32]byte, error)
 
-// RecomputeSig derives the correct Signature from Volume and Variance.
+// RecomputeSig derives the correct Signature from Volume, Variance, and Count.
 // Returns ERR_007 if recomputed value != n.Sig.
+//
+// Derivation rules (applied in order):
+//   1. NullPad:       all children are canonical NULL_Λ roots, Volume=0, Variance=0, Count=0
+//   2. Atomic:        Scale=1, child is a txid (not empty block sentinel)
+//   3. StagnantState: Volume=0 and Variance=0 (no active txs in subtree)
+//   4. LaminarFlow:   Variance=0 (uniform values, or single active tx)
+//   5. VolatileShock: CV² > 4, i.e. Variance > 4 * (Volume/Count)²  (high relative dispersion)
+//   6. LaminarFlow:   default (low relative dispersion)
 func (n *RGNode) RecomputeSig() (Signature, error)
 
 // NullNode returns the canonical NULL_Λ node at the given scale.
