@@ -98,19 +98,19 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("join block topic: %w", err)
 	}
 
-	txSub, err := txTopic.Subscribe()
+	txSub, err := txTopic.Subscribe(pubsub.WithBufferSize(8192))
 	if err != nil {
 		cancel()
 		h.Close()
 		return nil, fmt.Errorf("subscribe tx: %w", err)
 	}
-	batchSub, err := batchTopic.Subscribe()
+	batchSub, err := batchTopic.Subscribe(pubsub.WithBufferSize(4096))
 	if err != nil {
 		cancel()
 		h.Close()
 		return nil, fmt.Errorf("subscribe batch: %w", err)
 	}
-	blockSub, err := blockTopic.Subscribe()
+	blockSub, err := blockTopic.Subscribe(pubsub.WithBufferSize(256))
 	if err != nil {
 		cancel()
 		h.Close()
@@ -126,7 +126,7 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		txSub:      txSub,
 		batchSub:   batchSub,
 		blockSub:   blockSub,
-		txCh:       make(chan *tx.Tx, 1024),
+		txCh:       make(chan *tx.Tx, 16384),
 		blockCh:    make(chan []byte, 16),
 		cancel:     cancel,
 	}
