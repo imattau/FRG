@@ -10,6 +10,7 @@ import (
     "github.com/imattau/frg/core/p2p"
     "github.com/imattau/frg/core/staking"
     "github.com/imattau/frg/core/statemachine"
+    "github.com/imattau/frg/core/tx"
 )
 
 // Phase represents a consensus round phase.
@@ -90,17 +91,25 @@ type Engine struct {
     staking  *staking.Store
     sm       *statemachine.StateMachine
     p2p      *p2p.Node
+    proposer Proposer
     timeouts TimeoutConfig
     stopCh   chan struct{}
 }
 
+// Proposer defines the interface for building and finalizing proposals.
+type Proposer interface {
+    Propose(height uint64, round uint32, prevAttest AttestationSet) (*BlockProposal, error)
+    OnCommit(height uint64, txs []*tx.Tx)
+}
+
 // New creates a new consensus Engine.
-func New(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMachine, n *p2p.Node, cfg TimeoutConfig) *Engine {
+func New(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMachine, n *p2p.Node, proposer Proposer, cfg TimeoutConfig) *Engine {
     return &Engine{
         kp:       kp,
         staking:  s,
         sm:       sm,
         p2p:      n,
+        proposer: proposer,
         timeouts: cfg,
         stopCh:   make(chan struct{}),
     }
@@ -186,16 +195,15 @@ func (e *Engine) prevStateRoot() [32]byte {
 }
 
 func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
-    p := &BlockProposal{
-        Height:     rs.Height,
-        Round:      rs.Round,
-        ProposerPK: e.kp.PublicKey,
+    if e.proposer == nil {
+        return
     }
-    sig, err := e.kp.Sign(ProposalSignBytes(p))
+    // For now, we don't have a way to get the last height's precommits easily here
+    // In a full implementation, we'd store the last round's precommits.
+    p, err := e.proposer.Propose(rs.Height, rs.Round, AttestationSet{})
     if err != nil {
         return
     }
-    p.ProposerSig = sig
     data, err := SerializeProposal(p)
     if err != nil {
         return
@@ -240,7 +248,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
         rs.Precommits[v.ValidatorPK] = *v
         if QuorumReached(rs.Precommits, validators, stakes) && rs.Phase == PhasePrecommit {
             blockHash, hasQuorum := e.quorumBlock(rs.Precommits, validators, stakes)
-            if hasQuorum {
+            if hasQuorum && blockHash != [32]byte{} {
                 precommitTimer.Stop()
                 rs.Phase = PhaseCommit
                 e.commit(rs, blockHash)
@@ -262,9 +270,7 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
     rs.Phase = PhasePrevote
     proposeTimer.Stop()
 
-    // blockHash := p.BlockHash() // BlockHash method might be missing or different
-    // In the design it said: H(Height ∥ Round ∥ ProposerPK)
-    blockHash := [32]byte{} // Placeholder until BlockHash is properly implemented or defined
+    blockHash := p.BlockHash()
 
     // Lock rule: if locked on a different block, prevote nil unless we see 2/3+ for new block.
     if rs.LockedBlock != nil && *rs.LockedBlock != blockHash {
@@ -330,7 +336,7 @@ func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
 }
 
 func (e *Engine) commit(rs *RoundState, blockHash [32]byte) {
-    if rs.Proposal == nil {
+    if rs.Proposal == nil || rs.Proposal.BlockHash() != blockHash {
         return
     }
     b := &statemachine.Block{
@@ -338,7 +344,13 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) {
         Txs:            rs.Proposal.Txs,
         ProposerPubKey: rs.Proposal.ProposerPK,
     }
-    _, _ = e.sm.ApplyBlock(b)
+    _, err := e.sm.ApplyBlock(b)
+    if err != nil {
+        return
+    }
+    if e.proposer != nil {
+        e.proposer.OnCommit(rs.Height, rs.Proposal.Txs)
+    }
     // Advance to next height — block production loop will handle tx selection.
 }
 

@@ -68,6 +68,23 @@ func (sm *StateMachine) CurrentHeight() (uint64, error) {
 	return h, err
 }
 
+// CurrentStateRoot returns the state root of the last committed block. Returns zero value before genesis.
+func (sm *StateMachine) CurrentStateRoot() ([32]byte, error) {
+	var root [32]byte
+	err := sm.db.View(func(btx *bolt.Tx) error {
+		mb := btx.Bucket(metaBucket)
+		if mb == nil {
+			return nil
+		}
+		v := mb.Get([]byte("stateRoot"))
+		if v != nil {
+			copy(root[:], v)
+		}
+		return nil
+	})
+	return root, err
+}
+
 // ApplyBlock applies b to the state machine. All writes are atomic: any error
 // rolls back the entire block and returns the error.
 func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {

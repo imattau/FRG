@@ -114,7 +114,7 @@ func main() {
         Precommit: time.Duration(cfg.Consensus.PrecommitTimeoutMS) * time.Millisecond,
     }
 
-    engine := consensus.New(kp, s, sm, p2pNode, timeoutCfg)
+    engine := consensus.New(kp, s, sm, p2pNode, bl, timeoutCfg)
 
     go func() {
         if err := engine.Start(ctx); err != nil {

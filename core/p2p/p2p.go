@@ -211,12 +211,8 @@ func (n *Node) BroadcastBatch(txs []*tx.Tx) error {
 	return n.batchTopic.Publish(context.Background(), b)
 }
 
-// BroadcastBlockHeader gossips a serialised block header on frg/block/v1.
-// header must be: prevStateRoot[32] || height[8] || stateRoot[32] || proposerPubKey[32] || proposerSig[64] = 168 bytes
+// BroadcastBlockHeader gossips a serialised block header or proposal on frg/block/v1.
 func (n *Node) BroadcastBlockHeader(header []byte) error {
-	if len(header) != 168 {
-		return fmt.Errorf("block header must be 168 bytes, got %d", len(header))
-	}
 	return n.blockTopic.Publish(context.Background(), header)
 }
 
@@ -315,13 +311,10 @@ func (n *Node) readBlocks(ctx context.Context) {
 		if err != nil {
 			return
 		}
-		if len(msg.Data) != 168 {
-			continue
-		}
-		hdr := make([]byte, 168)
-		copy(hdr, msg.Data)
+		data := make([]byte, len(msg.Data))
+		copy(data, msg.Data)
 		select {
-		case n.blockCh <- hdr:
+		case n.blockCh <- data:
 		default:
 		}
 	}

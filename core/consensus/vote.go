@@ -2,6 +2,7 @@ package consensus
 
 import (
     "bytes"
+    "crypto/sha256"
     "encoding/binary"
     "errors"
     "fmt"
@@ -86,6 +87,16 @@ type BlockProposal struct {
     Txs              []*tx.Tx
     PrevAttestations AttestationSet  // 2/3+ precommits from height-1 (empty at height 1)
     ProposerSig      [64]byte        // Ed25519 sig over H(FRG_PROPOSAL_V1\x00 ∥ serialised fields excl. sig)
+}
+
+// BlockHash returns H(Height ∥ Round ∥ ProposerPK) as the proposal identifier.
+func (p *BlockProposal) BlockHash() [32]byte {
+	buf := make([]byte, 8+4+32)
+	binary.BigEndian.PutUint64(buf, p.Height)
+	binary.BigEndian.PutUint32(buf[8:], p.Round)
+	copy(buf[12:], p.ProposerPK[:])
+	// Use sha256.Sum256 directly to avoid circular dependency if hash package uses consensus
+	return sha256.Sum256(buf)
 }
 
 // ProposalSignBytes returns the bytes signed by the proposer.
