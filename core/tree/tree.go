@@ -165,17 +165,14 @@ func coarseGrain(chunk []*node.RGNode, parentScale uint32) (*node.RGNode, error)
 	variance := big.NewInt(0)
 	if count > 0 {
 		n := new(big.Int).SetUint64(count)
-		scale := hash.Scale
-		// Variance in fixed-point SCALE units:
-		// E[x^2] - E[x]^2, where all values are already in SCALE units.
-		// secondMoment = (sumSquares * SCALE) / count
-		// meanScaled   = sumValues / count  (in SCALE units)
-		// variance     = secondMoment - meanScaled^2 / SCALE
-		secondMoment := new(big.Int).Mul(sumSquares, scale)
-		secondMoment.Div(secondMoment, n)
-		meanScaled := new(big.Int).Div(new(big.Int).Set(sumValues), n)
-		meanSquared := new(big.Int).Mul(meanScaled, meanScaled)
-		meanSquared.Div(meanSquared, scale)
+		// Population variance = E[x²] - E[x]²
+		// sumSquares is in SCALE² units (value*value), sumValues in SCALE units.
+		// secondMoment = sumSquares / count  (SCALE² units)
+		// mean         = sumValues / count   (SCALE units)
+		// variance     = secondMoment - mean²  (SCALE² units, consistent)
+		secondMoment := new(big.Int).Div(new(big.Int).Set(sumSquares), n)
+		mean := new(big.Int).Div(new(big.Int).Set(sumValues), n)
+		meanSquared := new(big.Int).Mul(mean, mean)
 		variance.Sub(secondMoment, meanSquared)
 		if variance.Sign() < 0 {
 			variance.SetInt64(0)
