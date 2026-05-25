@@ -62,7 +62,7 @@ func TestP2PBatchStress(t *testing.T) {
 		for b := 0; b < batchCount; b++ {
 			innerBatch := make([]*tx.Tx, batchSize)
 			for j := 0; j < batchSize; j++ {
-				innerBatch[j] = makeTx(t, senderKP, receiverKP, 1, uint64(b*batchSize+j+1))
+				innerBatch[j] = makeTx(t, senderKP, receiverKP, 1, uint64(i*txPerNode+b*batchSize+j+1))
 			}
 			batchPayloads[b] = innerBatch
 		}
@@ -70,6 +70,11 @@ func TestP2PBatchStress(t *testing.T) {
 	}
 
 	// 4. Setup Parity Tracking
+	// Each node must receive txs from all OTHER nodes via the channel.
+	// Self-sent txs are not echoed by GossipSub; they are credited directly.
+	// Target per node: txPerNode txs from each of the other (nodeCount-1) nodes.
+	const crossNodeTarget = txPerNode * (nodeCount - 1)
+
 	var wg sync.WaitGroup
 	wg.Add(nodeCount)
 
@@ -84,6 +89,7 @@ func TestP2PBatchStress(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			sub := nodes[idx].SubscribeTxs()
+			crossReceived := 0
 			for {
 				select {
 				case <-ctx.Done():
@@ -97,11 +103,14 @@ func TestP2PBatchStress(t *testing.T) {
 						continue
 					}
 					trackers[idx].Lock()
+					_, alreadySeen := trackers[idx].seen[id]
 					trackers[idx].seen[id] = struct{}{}
-					count := len(trackers[idx].seen)
 					trackers[idx].Unlock()
 
-					if count == totalTxs {
+					if !alreadySeen {
+						crossReceived++
+					}
+					if crossReceived >= crossNodeTarget {
 						return
 					}
 				}
@@ -110,15 +119,24 @@ func TestP2PBatchStress(t *testing.T) {
 	}
 
 	// 5. The Batch Flood
+	// GossipSub does not echo messages back to the publisher, so we credit
+	// self-sent txs to the local tracker immediately.
 	start := time.Now()
 	for i := 0; i < nodeCount; i++ {
-		go func(set batchSet) {
+		go func(idx int, set batchSet) {
 			for _, b := range set.payloads {
+				for _, tr := range b {
+					id, err := tr.ID()
+					if err == nil {
+						trackers[idx].Lock()
+						trackers[idx].seen[id] = struct{}{}
+						trackers[idx].Unlock()
+					}
+				}
 				_ = set.sender.BroadcastBatch(b)
-				// Increase delay to ensure stable processing
 				time.Sleep(50 * time.Millisecond)
 			}
-		}(sets[i])
+		}(i, sets[i])
 	}
 
 	// 6. Wait for Parity

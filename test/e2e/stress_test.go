@@ -34,12 +34,12 @@ func TestP2PFloodStress(t *testing.T) {
 		nodes[i] = n
 	}
 
-	// 2. Connect Nodes (Mesh Topology)
-	// Node 0 acts as a bootstrap node. Others connect to it.
-	bootstrapAddr := nodes[0].Addrs()
-	for i := 1; i < nodeCount; i++ {
-		if err := nodes[i].Connect(ctx, bootstrapAddr); err != nil {
-			t.Fatalf("node %d failed to connect to bootstrap: %v", i, err)
+	// 2. Connect Nodes (Full Mesh)
+	for i := 0; i < nodeCount; i++ {
+		for j := i + 1; j < nodeCount; j++ {
+			if err := nodes[i].Connect(ctx, nodes[j].Addrs()); err != nil {
+				t.Fatalf("node %d failed to connect to node %d: %v", i, j, err)
+			}
 		}
 	}
 
@@ -59,12 +59,17 @@ func TestP2PFloodStress(t *testing.T) {
 		receiverKP := makeKeypair(t)
 		batch := make([]*tx.Tx, txPerNode)
 		for j := 0; j < txPerNode; j++ {
-			batch[j] = makeTx(t, senderKP, receiverKP, 1, uint64(j+1))
+			batch[j] = makeTx(t, senderKP, receiverKP, 1, uint64(i*txPerNode+j+1))
 		}
 		batches[i] = txBatch{sender: nodes[i], payloads: batch}
 	}
 
 	// 4. Setup Parity Tracking
+	// Each node must receive txs from all OTHER nodes via the channel.
+	// Self-sent txs are not echoed by GossipSub; they are credited directly.
+	// Target per node: txPerNode txs from each of the other (nodeCount-1) nodes.
+	const crossNodeTarget = txPerNode * (nodeCount - 1)
+
 	var wg sync.WaitGroup
 	wg.Add(nodeCount)
 
@@ -79,6 +84,7 @@ func TestP2PFloodStress(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			sub := nodes[idx].SubscribeTxs()
+			crossReceived := 0
 			for {
 				select {
 				case <-ctx.Done():
@@ -93,12 +99,14 @@ func TestP2PFloodStress(t *testing.T) {
 						return
 					}
 					trackers[idx].Lock()
+					_, alreadySeen := trackers[idx].seen[id]
 					trackers[idx].seen[id] = struct{}{}
-					count := len(trackers[idx].seen)
 					trackers[idx].Unlock()
 
-					// If we hit the target, this node is done
-					if count == totalTxs {
+					if !alreadySeen {
+						crossReceived++
+					}
+					if crossReceived >= crossNodeTarget {
 						return
 					}
 				}
@@ -107,16 +115,22 @@ func TestP2PFloodStress(t *testing.T) {
 	}
 
 	// 5. The Flood (Broadcast)
+	// GossipSub does not echo messages back to the publisher, so we credit
+	// self-sent txs to the local tracker immediately.
 	start := time.Now()
 	for i := 0; i < nodeCount; i++ {
-		go func(batch txBatch) {
+		go func(idx int, batch txBatch) {
 			for _, tr := range batch.payloads {
-				// Ignore broadcast errors during flood (e.g. queue full), though ideally they succeed
+				id, err := tr.ID()
+				if err == nil {
+					trackers[idx].Lock()
+					trackers[idx].seen[id] = struct{}{}
+					trackers[idx].Unlock()
+				}
 				_ = batch.sender.BroadcastTx(tr)
-				// Slight delay to prevent local socket buffer overflow before GossipSub can route
 				time.Sleep(5 * time.Millisecond)
 			}
-		}(batches[i])
+		}(i, batches[i])
 	}
 
 	// 6. Wait for Parity
@@ -131,7 +145,7 @@ func TestP2PFloodStress(t *testing.T) {
 		t.Errorf("timeout waiting for mempool parity")
 		for i := 0; i < nodeCount; i++ {
 			trackers[i].Lock()
-			t.Logf("Node %d received %d/%d txs", i, len(trackers[i].seen), totalTxs)
+			t.Logf("Node %d received %d/%d txs (self-sent+cross)", i, len(trackers[i].seen), totalTxs)
 			trackers[i].Unlock()
 		}
 		t.FailNow()
