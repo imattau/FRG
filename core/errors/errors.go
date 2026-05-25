@@ -15,6 +15,7 @@ const (
 	ErrNamespaceEscapeFault        ErrorCode = "ERR_008"
 	ErrCanonicalEncodingDistortion ErrorCode = "ERR_009"
 	ErrDosSizeExceeded             ErrorCode = "ERR_010"
+	ErrRootMismatch                ErrorCode = "ERR_011"
 )
 
 type RGError struct {
