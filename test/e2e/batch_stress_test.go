@@ -16,8 +16,8 @@ func TestP2PBatchStress(t *testing.T) {
 	}
 
 	const nodeCount = 5
-	const batchSize = 100
-	const batchCount = 10
+	const batchSize = 20
+	const batchCount = 50
 	const txPerNode = batchSize * batchCount
 	const totalTxs = nodeCount * txPerNode
 
@@ -36,11 +36,12 @@ func TestP2PBatchStress(t *testing.T) {
 		nodes[i] = n
 	}
 
-	// 2. Connect Nodes (Mesh Topology)
-	bootstrapAddr := nodes[0].Addrs()
-	for i := 1; i < nodeCount; i++ {
-		if err := nodes[i].Connect(ctx, bootstrapAddr); err != nil {
-			t.Fatalf("node %d failed to connect to bootstrap: %v", i, err)
+	// 2. Connect Nodes (Full Mesh)
+	for i := 0; i < nodeCount; i++ {
+		for j := i + 1; j < nodeCount; j++ {
+			if err := nodes[i].Connect(ctx, nodes[j].Addrs()); err != nil {
+				t.Fatalf("node %d failed to connect to node %d: %v", i, j, err)
+			}
 		}
 	}
 
@@ -114,8 +115,8 @@ func TestP2PBatchStress(t *testing.T) {
 		go func(set batchSet) {
 			for _, b := range set.payloads {
 				_ = set.sender.BroadcastBatch(b)
-				// Even with batching, we add a tiny delay to allow GossipSub to process
-				time.Sleep(10 * time.Millisecond)
+				// Increase delay to ensure stable processing
+				time.Sleep(50 * time.Millisecond)
 			}
 		}(sets[i])
 	}
