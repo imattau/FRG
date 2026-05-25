@@ -266,6 +266,35 @@ func TestValidatorSet(t *testing.T) {
 	}
 }
 
+func TestBondedAmounts(t *testing.T) {
+	s, l := openStore(t)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	kpC, _ := keys.GenerateKeypair()
+	seedValidator(t, l, kpA.PublicKey, 5000)
+	seedValidator(t, l, kpB.PublicKey, 5000)
+	seedValidator(t, l, kpC.PublicKey, 5000)
+	_ = s.Bond(kpA.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kpB.PublicKey, big.NewInt(2000), 1)
+	_ = s.Bond(kpC.PublicKey, big.NewInt(3000), 1)
+	_ = s.Unbond(kpC.PublicKey, 10)
+
+	validators, amounts, err := s.BondedAmounts()
+	if err != nil {
+		t.Fatalf("BondedAmounts: %v", err)
+	}
+	if len(validators) != 2 {
+		t.Fatalf("expected 2 bonded validators, got %d", len(validators))
+	}
+	total := new(big.Int)
+	for _, a := range amounts {
+		total.Add(total, a)
+	}
+	if total.Cmp(big.NewInt(3000)) != 0 {
+		t.Fatalf("total bonded: got %v want 3000", total)
+	}
+}
+
 func TestPersistence(t *testing.T) {
 	dir := t.TempDir()
 	ledgerPath := filepath.Join(dir, "ledger.db")

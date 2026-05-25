@@ -184,6 +184,26 @@ func (s *Store) ValidatorSet() ([][32]byte, error) {
 	return out, err
 }
 
+// BondedAmounts returns all BONDED validators and their bond amounts in consistent order.
+// validatorSet[i] corresponds to bondedAmounts[i].
+func (s *Store) BondedAmounts() ([][32]byte, []*big.Int, error) {
+	var validatorSet [][32]byte
+	var bondedAmounts []*big.Int
+	err := s.db.View(func(btx *bolt.Tx) error {
+		return btx.Bucket(validatorsBucket).ForEach(func(k, v []byte) error {
+			rec := decodeRecord(v)
+			if rec.State == stateBonded {
+				var pub [32]byte
+				copy(pub[:], k)
+				validatorSet = append(validatorSet, pub)
+				bondedAmounts = append(bondedAmounts, new(big.Int).Set(rec.BondedAmount))
+			}
+			return nil
+		})
+	})
+	return validatorSet, bondedAmounts, err
+}
+
 func (s *Store) readRecord(validator [32]byte) (*record, error) {
 	var rec *record
 	err := s.db.View(func(btx *bolt.Tx) error {
