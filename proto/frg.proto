@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package frg;
+
+option go_package = "github.com/imattau/frg/proto";
+
+service FRG {
+  rpc SubmitTx(RawBytes) returns (SubmitResponse);
+  rpc SubmitBatch(RawBytesArray) returns (SubmitResponse);
+  rpc SubscribeBlocks(Empty) returns (stream RawBytes);
+}
+
+message RawBytes {
+  bytes data = 1;
+}
+
+message RawBytesArray {
+  repeated bytes data = 1;
+}
+
+message SubmitResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message Empty {}
