@@ -34,6 +34,26 @@ func (k *Keypair) Sign(msg []byte) ([64]byte, error) {
 	return out, nil
 }
 
+// NewKeypairFromSeed creates a keypair from a 32-byte seed.
+func NewKeypairFromSeed(seed [32]byte) *Keypair {
+    priv := ed25519.NewKeyFromSeed(seed[:])
+    pub := priv.Public().(ed25519.PublicKey)
+    kp := &Keypair{}
+    copy(kp.PublicKey[:], pub)
+    copy(kp.PrivateKey[:], priv)
+    return kp
+}
+
+// NewKeypairFromPrivateKey creates a keypair from a 64-byte private key.
+func NewKeypairFromPrivateKey(privKey [64]byte) *Keypair {
+    priv := ed25519.PrivateKey(privKey[:])
+    pub := priv.Public().(ed25519.PublicKey)
+    kp := &Keypair{}
+    copy(kp.PublicKey[:], pub)
+    copy(kp.PrivateKey[:], priv)
+    return kp
+}
+
 // Verify verifies a 64-byte signature against msg using pubKey.
 func Verify(pubKey [32]byte, msg []byte, sig [64]byte) bool {
 	return ed25519.Verify(ed25519.PublicKey(pubKey[:]), msg, sig[:])
