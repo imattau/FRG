@@ -6,7 +6,7 @@ A distributed ledger protocol that organises high-throughput transactions into m
 
 ## Protocol Overview
 
-FRG processes up to **65,536 transactions per block**, organising them into a K=4 merkle tree. Each internal node carries aggregated volume and variance statistics, embedding macroeconomic telemetry directly in the state root. The result: any node can verify the full economic state of the network from a single 32-byte hash.
+FRG processes up to **65,536 transactions per block**, organising them into a K=4 Renormalisation Group (RG) state tree. Each internal node carries aggregated volume and variance statistics and a derived economic signature, embedding macroeconomic telemetry directly in the state root. The result: any node can verify the full economic state of the network from a single 32-byte hash.
 
 ### Core Constants
 
