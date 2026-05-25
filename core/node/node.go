@@ -109,13 +109,31 @@ func NullNode(scale uint32) (*RGNode, error) {
 		return nil, rgerrors.Newf(rgerrors.ErrScaleDomainFault, "invalid scale %d", scale)
 	}
 
-	childCount := 1
-	if scale > 1 {
-		childCount = 4
+	if scale == 1 {
+		return &RGNode{
+			Scale:      1,
+			Volume:     big.NewInt(0),
+			Variance:   big.NewInt(0),
+			Sig:        SigNullPad,
+			Children:   [][32]byte{nullPadChildRoot},
+			SumValues:  big.NewInt(0),
+			SumSquares: big.NewInt(0),
+			Count:      0,
+		}, nil
 	}
-	children := make([][32]byte, childCount)
+
+	// For scale > 1, each child must be the root of NullNode(scale/4).
+	childNull, err := NullNode(scale / 4)
+	if err != nil {
+		return nil, err
+	}
+	childRoot, err := childNull.Root()
+	if err != nil {
+		return nil, err
+	}
+	children := make([][32]byte, 4)
 	for i := range children {
-		children[i] = nullPadChildRoot
+		children[i] = childRoot
 	}
 
 	return &RGNode{
@@ -143,6 +161,11 @@ func EmptyBlockRoot() [32]byte {
 		return [32]byte{}
 	}
 	return root
+}
+
+// DeriveSignature computes the correct signature enum for n from its fields.
+func DeriveSignature(n *RGNode) Signature {
+	return deriveSignature(n)
 }
 
 func deriveSignature(n *RGNode) Signature {
@@ -175,18 +198,37 @@ func deriveSignature(n *RGNode) Signature {
 }
 
 func isNullPadNode(n *RGNode) bool {
-	if n == nil {
+	if n == nil || len(n.Children) == 0 {
 		return false
 	}
-	if len(n.Children) == 0 {
+	if n.Volume == nil || n.Volume.Sign() != 0 {
 		return false
 	}
-	for _, child := range n.Children {
-		if child != nullPadChildRoot {
+	if n.Variance == nil || n.Variance.Sign() != 0 {
+		return false
+	}
+	if n.Count != 0 {
+		return false
+	}
+	// Scale-1 null: single child must be the domain hash sentinel.
+	if n.Scale == 1 {
+		return len(n.Children) == 1 && n.Children[0] == nullPadChildRoot
+	}
+	// Scale>1 null: all 4 children must be roots of NullNode(scale/4).
+	childNull, err := NullNode(n.Scale / 4)
+	if err != nil {
+		return false
+	}
+	childRoot, err := childNull.Root()
+	if err != nil {
+		return false
+	}
+	for _, ch := range n.Children {
+		if ch != childRoot {
 			return false
 		}
 	}
-	return n.Volume != nil && n.Volume.Sign() == 0 && n.Variance != nil && n.Variance.Sign() == 0
+	return true
 }
 
 func isEmptyBlockNode(n *RGNode) bool {

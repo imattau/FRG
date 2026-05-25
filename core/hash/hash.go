@@ -15,6 +15,9 @@ const (
 
 var UINT256_MAX = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 
+// Scale is the fixed-point denominator: 10^18.
+var Scale = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+
 var validScales = map[uint32]struct{}{
 	1:     {},
 	4:     {},

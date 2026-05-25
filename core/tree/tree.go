@@ -165,12 +165,20 @@ func coarseGrain(chunk []*node.RGNode, parentScale uint32) (*node.RGNode, error)
 	variance := big.NewInt(0)
 	if count > 0 {
 		n := new(big.Int).SetUint64(count)
-		secondMoment := new(big.Int).Div(new(big.Int).Set(sumSquares), n)
-		mean := new(big.Int).Div(new(big.Int).Set(sumValues), n)
-		meanSquared := new(big.Int).Mul(mean, mean)
+		scale := hash.Scale
+		// Variance in fixed-point SCALE units:
+		// E[x^2] - E[x]^2, where all values are already in SCALE units.
+		// secondMoment = (sumSquares * SCALE) / count
+		// meanScaled   = sumValues / count  (in SCALE units)
+		// variance     = secondMoment - meanScaled^2 / SCALE
+		secondMoment := new(big.Int).Mul(sumSquares, scale)
+		secondMoment.Div(secondMoment, n)
+		meanScaled := new(big.Int).Div(new(big.Int).Set(sumValues), n)
+		meanSquared := new(big.Int).Mul(meanScaled, meanScaled)
+		meanSquared.Div(meanSquared, scale)
 		variance.Sub(secondMoment, meanSquared)
 		if variance.Sign() < 0 {
-			return nil, rgerrors.New(rgerrors.ErrArithmeticOverflow, "variance is negative")
+			variance.SetInt64(0)
 		}
 	}
 
@@ -183,50 +191,13 @@ func coarseGrain(chunk []*node.RGNode, parentScale uint32) (*node.RGNode, error)
 		SumSquares: new(big.Int).Set(sumSquares),
 		Count:      count,
 	}
-	parent.Sig = deriveSignature(parent)
+	parent.Sig = node.DeriveSignature(parent)
 
 	if _, err := parent.RecomputeSig(); err != nil {
 		return nil, err
 	}
 
 	return parent, nil
-}
-
-func deriveSignature(n *node.RGNode) node.Signature {
-	if n == nil {
-		return 0
-	}
-
-	if n.Scale == 1 {
-		if len(n.Children) == 1 && n.Children[0] == hash.Hash([]byte(hash.DomainEmptyBlock)) {
-			return node.SigStagnantState
-		}
-		return node.SigAtomic
-	}
-
-	nullChild := hash.Hash([]byte(hash.DomainNullPad))
-	isNull := len(n.Children) > 0
-	for _, child := range n.Children {
-		if child != nullChild {
-			isNull = false
-			break
-		}
-	}
-	if isNull {
-		return node.SigNullPad
-	}
-
-	zero := big.NewInt(0)
-	if n.Volume != nil && n.Volume.Cmp(zero) == 0 && n.Variance != nil && n.Variance.Cmp(zero) == 0 {
-		return node.SigStagnantState
-	}
-	if n.Variance != nil && n.Variance.Cmp(zero) == 0 {
-		return node.SigLaminarFlow
-	}
-	if n.Volume != nil && n.Variance != nil && n.Variance.Cmp(n.Volume) > 0 {
-		return node.SigVolatileShock
-	}
-	return node.SigLaminarFlow
 }
 
 func addBigInt(dst *big.Int, src *big.Int) {

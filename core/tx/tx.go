@@ -123,7 +123,7 @@ func (t *Tx) Serialize() ([]byte, error) {
 }
 
 func (t *Tx) ID() ([32]byte, error) {
-	serialized, err := t.Serialize()
+	serialized, err := t.serializeUnsigned()
 	if err != nil {
 		return [32]byte{}, err
 	}
