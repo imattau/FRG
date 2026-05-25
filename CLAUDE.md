@@ -43,16 +43,31 @@ Valid scale values are `Λ = K^n` for `n ∈ {0,1,...,8}`: `1, 4, 16, 64, 256, 1
 ## Serialisation Formats
 
 ### Transaction (`Tx_Bytes`)
+
+All transactions share a common unsigned serialisation format. `txid = H(Tx_Bytes)`.
+
 ```
 [TX_V1\x00 — 6 bytes]
+[Type — uint8, 1 byte]          ← 1=TRANSFER, 2=MISS_EVIDENCE
 [Len_Sender — uint16, 2 bytes]
 [Sender — UTF-8 NFC, variable]
 [Len_Rcvr — uint16, 2 bytes]
 [Receiver — UTF-8 NFC, variable]
-[Value — uint256, 32 bytes]  ← fixed-point, multiply by 10^18
+[Value — uint256, 32 bytes]     ← fixed-point, multiply by 10^18
 [Nonce — uint64, 8 bytes]
+[MissedHeight — uint64, 8 bytes]   ← MISS_EVIDENCE only; zero for TRANSFER
+[MissedProposer — 32 bytes]        ← MISS_EVIDENCE only; zero for TRANSFER
+[SkipIndex — uint32, 4 bytes]      ← MISS_EVIDENCE only; zero for TRANSFER
 ```
-`txid = H(Tx_Bytes)`
+
+#### Transaction Types
+
+| Type | Value | Purpose |
+|---|---|---|
+| `TRANSFER` | 1 | Move value between accounts |
+| `MISS_EVIDENCE` | 2 | Record a validator miss; triggers slash at threshold |
+
+For `MISS_EVIDENCE` txs: `Sender` = reporter pubkey, `Receiver` = missed validator pubkey, `Value` = 0, `MissedHeight` = the block height the validator missed, `MissedProposer` = expected proposer pubkey at that height, `SkipIndex` = round number.
 
 ### RGNode (`Node_Bytes`)
 ```
@@ -130,6 +145,13 @@ A node is uniquely identified by `(h, Λ, idx)` where `h` = block height. Block 
 | ERR_008 | NAMESPACE_ESCAPE_FAULT | Cross-block node injection |
 | ERR_009 | CANONICAL_ENCODING_DISTORTION | Input doesn't match length-prefixed spec |
 | ERR_010 | DOS_SIZE_EXCEEDED | Block tx count > T_MAX or tx payload > 70KB |
+| ERR_011 | ROOT_MISMATCH | Recomputed state root ≠ claimed root |
+| ERR_012 | INVALID_SIGNATURE | Ed25519 signature verification failed |
+| ERR_013 | INSUFFICIENT_FUNDS | Sender balance < transfer value + gas |
+| ERR_015 | NOT_BONDED | Operation requires bonded validator |
+| ERR_018 | NONCE_SEQUENCE_FAULT | Tx nonce ≠ account nonce + 1 |
+| ERR_019 | INVALID_TX_TYPE | Unknown transaction type byte |
+| ERR_021 | BLOCK_HEIGHT_SEQUENCE_FAULT | b.Height ≠ currentHeight + 1 |
 
 On any fault: fail closed, discard all uncommitted state, report error code, disconnect peer.
 
