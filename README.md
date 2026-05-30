@@ -104,13 +104,44 @@ Leader election: `proposer = sortedValidators[H(prevStateRoot ∥ blockHeight) m
 ## Getting Started
 
 ### Prerequisites
-- Go 1.25+
+- Go 1.25.7+
 
 ### Build
 
 ```bash
 go build ./...
 ```
+
+### Run
+
+```bash
+./frg-node
+```
+
+On first launch the node now bootstraps local defaults in the current directory:
+- `frg.key` for the node keypair
+- `genesis.json` for the bootstrap validator set
+- `frg.db` for the local BoltDB state
+- gRPC admin API on `127.0.0.1:50051`
+
+Use the gRPC API from the `client` package or any gRPC client that speaks the `frg.FRG` service in `proto/frg.proto`.
+
+If you want a minimal local setup for the web client or direct gRPC submits, start the node in gRPC-only mode:
+
+```bash
+./frg-node -grpc-only
+```
+
+That skips P2P/blockloop startup and brings up the admin API immediately on `127.0.0.1:50051`.
+
+### Web Client
+
+```bash
+./frg-web
+```
+
+By default it opens on `http://127.0.0.1:8080` and points at `127.0.0.1:50051`.
+Use the page to submit raw hex-encoded transactions, submit batches, stream block headers, and poll live node status from any FRG gRPC server.
 
 ### Test
 

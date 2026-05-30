@@ -44,10 +44,22 @@ type SubmitResponse struct {
 
 type Empty struct{}
 
+type StatusResponse struct {
+	Height         uint64 `json:"height,omitempty"`
+	StateRoot      []byte `json:"state_root,omitempty"`
+	PeerCount      uint64 `json:"peer_count,omitempty"`
+	MempoolLen     uint64 `json:"mempool_len,omitempty"`
+	ValidatorCount uint64 `json:"validator_count,omitempty"`
+	ConsensusRound uint32 `json:"consensus_round,omitempty"`
+	ConsensusPhase string `json:"consensus_phase,omitempty"`
+	GrpcOnly       bool   `json:"grpc_only,omitempty"`
+}
+
 type FRGClient interface {
 	SubmitTx(ctx context.Context, in *RawBytes, opts ...grpc.CallOption) (*SubmitResponse, error)
 	SubmitBatch(ctx context.Context, in *RawBytesArray, opts ...grpc.CallOption) (*SubmitResponse, error)
 	SubscribeBlocks(ctx context.Context, in *Empty, opts ...grpc.CallOption) (FRG_SubscribeBlocksClient, error)
+	GetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*StatusResponse, error)
 }
 
 type fRGClient struct {
@@ -108,10 +120,20 @@ func (x *fRGSubscribeBlocksClient) Recv() (*RawBytes, error) {
 	return m, nil
 }
 
+func (c *fRGClient) GetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*StatusResponse, error) {
+	out := new(StatusResponse)
+	err := c.cc.Invoke(ctx, "/frg.FRG/GetStatus", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type FRGServer interface {
 	SubmitTx(context.Context, *RawBytes) (*SubmitResponse, error)
 	SubmitBatch(context.Context, *RawBytesArray) (*SubmitResponse, error)
 	SubscribeBlocks(*Empty, FRG_SubscribeBlocksServer) error
+	GetStatus(context.Context, *Empty) (*StatusResponse, error)
 	mustEmbedUnimplementedFRGServer()
 }
 
@@ -127,6 +149,10 @@ func (UnimplementedFRGServer) SubmitBatch(context.Context, *RawBytesArray) (*Sub
 
 func (UnimplementedFRGServer) SubscribeBlocks(*Empty, FRG_SubscribeBlocksServer) error {
 	return errors.New("method SubscribeBlocks not implemented")
+}
+
+func (UnimplementedFRGServer) GetStatus(context.Context, *Empty) (*StatusResponse, error) {
+	return nil, errors.New("method GetStatus not implemented")
 }
 
 func (UnimplementedFRGServer) mustEmbedUnimplementedFRGServer() {}
@@ -188,6 +214,24 @@ func _FRG_SubscribeBlocks_Handler(srv any, stream grpc.ServerStream) error {
 	return srv.(FRGServer).SubscribeBlocks(m, &fRGSubscribeBlocksServer{stream})
 }
 
+func _FRG_GetStatus_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FRGServer).GetStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/frg.FRG/GetStatus",
+	}
+	handler := func(ctx context.Context, req any) (any, error) {
+		return srv.(FRGServer).GetStatus(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 type fRGSubscribeBlocksServer struct {
 	grpc.ServerStream
 }
@@ -207,6 +251,10 @@ var FRG_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitBatch",
 			Handler:    _FRG_SubmitBatch_Handler,
+		},
+		{
+			MethodName: "GetStatus",
+			Handler:    _FRG_GetStatus_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

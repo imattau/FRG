@@ -8,6 +8,7 @@ service FRG {
   rpc SubmitTx(RawBytes) returns (SubmitResponse);
   rpc SubmitBatch(RawBytesArray) returns (SubmitResponse);
   rpc SubscribeBlocks(Empty) returns (stream RawBytes);
+  rpc GetStatus(Empty) returns (StatusResponse);
 }
 
 message RawBytes {
@@ -24,3 +25,14 @@ message SubmitResponse {
 }
 
 message Empty {}
+
+message StatusResponse {
+  uint64 height = 1;
+  bytes state_root = 2;
+  uint64 peer_count = 3;
+  uint64 mempool_len = 4;
+  uint64 validator_count = 5;
+  uint32 consensus_round = 6;
+  string consensus_phase = 7;
+  bool grpc_only = 8;
+}
