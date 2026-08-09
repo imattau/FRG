@@ -1,6 +1,7 @@
 package statemachine_test
 
 import (
+	"encoding/binary"
 	"math/big"
 	"path/filepath"
 	"testing"
@@ -86,6 +87,33 @@ func TestCommittedBlockReplayStorage(t *testing.T) {
 	blocks, err := sm.Blocks(1, 1)
 	if err != nil || len(blocks) != 1 {
 		t.Fatalf("unexpected block range: len=%d err=%v", len(blocks), err)
+	}
+}
+
+func TestBackupCreatesConsistentSnapshot(t *testing.T) {
+	sm, _ := openSM(t)
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1}); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(t.TempDir(), "state-backup.db")
+	if err := sm.Backup(backupPath); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := bolt.Open(backupPath, 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	var height uint64
+	if err := backup.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket([]byte("meta")).Get([]byte("height"))
+		height = binary.BigEndian.Uint64(v)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if height != 1 {
+		t.Fatalf("backup height = %d, want 1", height)
 	}
 }
 

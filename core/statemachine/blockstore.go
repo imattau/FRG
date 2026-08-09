@@ -15,7 +15,10 @@ const (
 	maxBlockRange       = 1024
 )
 
-var blockMagic = []byte("FRG_BLOCK_V1\x00")
+var (
+	blockMagicV1 = []byte("FRG_BLOCK_V1\x00")
+	blockMagicV2 = []byte("FRG_BLOCK_V2\x00")
+)
 
 // BlockAt returns a committed block by height. Height zero is genesis and has
 // no stored block.
@@ -83,13 +86,20 @@ func serializeBlock(block *Block) ([]byte, error) {
 			return nil, err
 		}
 	}
-	const headerSize = 13 + 8 + 32 + 4
-	data := make([]byte, headerSize+len(batch))
-	copy(data[:len(blockMagic)], blockMagic)
+	if len(block.ProposalBytes) > maxStoredBlockBytes {
+		return nil, fmt.Errorf("serialized proposal exceeds %d bytes", maxStoredBlockBytes)
+	}
+	const headerSize = 13 + 8 + 32 + 32 + 32 + 4 + 4
+	data := make([]byte, headerSize+len(batch)+len(block.ProposalBytes))
+	copy(data[:13], blockMagicV2)
 	binary.BigEndian.PutUint64(data[13:21], block.Height)
 	copy(data[21:53], block.ProposerPubKey[:])
-	binary.BigEndian.PutUint32(data[53:57], uint32(len(block.Txs)))
-	copy(data[57:], batch)
+	copy(data[53:85], block.PrevStateRoot[:])
+	copy(data[85:117], block.StateRoot[:])
+	binary.BigEndian.PutUint32(data[117:121], uint32(len(block.Txs)))
+	binary.BigEndian.PutUint32(data[121:125], uint32(len(block.ProposalBytes)))
+	copy(data[125:125+len(batch)], batch)
+	copy(data[125+len(batch):], block.ProposalBytes)
 	if len(data) > maxStoredBlockBytes {
 		return nil, fmt.Errorf("serialized block exceeds %d bytes", maxStoredBlockBytes)
 	}
@@ -97,10 +107,50 @@ func serializeBlock(block *Block) ([]byte, error) {
 }
 
 func deserializeBlock(data []byte) (*Block, error) {
-	const headerSize = 13 + 8 + 32 + 4
-	if len(data) < headerSize || len(data) > maxStoredBlockBytes || string(data[:len(blockMagic)]) != string(blockMagic) {
+	const v1HeaderSize = 13 + 8 + 32 + 4
+	const v2HeaderSize = 13 + 8 + 32 + 32 + 32 + 4 + 4
+	if len(data) < v1HeaderSize || len(data) > maxStoredBlockBytes {
 		return nil, fmt.Errorf("invalid stored block")
 	}
+	if string(data[:13]) == string(blockMagicV1) {
+		return deserializeV1Block(data)
+	}
+	if string(data[:13]) != string(blockMagicV2) || len(data) < v2HeaderSize {
+		return nil, fmt.Errorf("invalid stored block")
+	}
+	block := &Block{Height: binary.BigEndian.Uint64(data[13:21])}
+	copy(block.ProposerPubKey[:], data[21:53])
+	copy(block.PrevStateRoot[:], data[53:85])
+	copy(block.StateRoot[:], data[85:117])
+	count := int(binary.BigEndian.Uint32(data[117:121]))
+	proposalLen := int(binary.BigEndian.Uint32(data[121:125]))
+	if proposalLen < 0 || proposalLen > len(data)-v2HeaderSize {
+		return nil, fmt.Errorf("invalid stored proposal length")
+	}
+	batchEnd := len(data) - proposalLen
+	if batchEnd < v2HeaderSize {
+		return nil, fmt.Errorf("invalid stored block payload")
+	}
+	block.ProposalBytes = append([]byte(nil), data[batchEnd:]...)
+	if count == 0 {
+		if batchEnd != v2HeaderSize {
+			return nil, fmt.Errorf("stored empty block has trailing bytes")
+		}
+		return block, nil
+	}
+	txs, err := tx.DeserializeBatch(data[v2HeaderSize:batchEnd])
+	if err != nil {
+		return nil, err
+	}
+	if len(txs) != count {
+		return nil, fmt.Errorf("stored block transaction count mismatch")
+	}
+	block.Txs = txs
+	return block, nil
+}
+
+func deserializeV1Block(data []byte) (*Block, error) {
+	const headerSize = 13 + 8 + 32 + 4
 	block := &Block{Height: binary.BigEndian.Uint64(data[13:21])}
 	copy(block.ProposerPubKey[:], data[21:53])
 	count := int(binary.BigEndian.Uint32(data[53:57]))

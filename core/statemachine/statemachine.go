@@ -26,6 +26,9 @@ type Block struct {
 	Height         uint64
 	Txs            []*tx.Tx
 	ProposerPubKey [32]byte
+	PrevStateRoot  [32]byte
+	StateRoot      [32]byte
+	ProposalBytes  []byte
 }
 
 // Result is returned by a successful ApplyBlock.
@@ -185,6 +188,16 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		return nil, rgerrors.Newf(rgerrors.ErrBlockHeightSequenceFault,
 			"expected height %d, got %d", cur+1, b.Height)
 	}
+	if b.PrevStateRoot != [32]byte{} {
+		previousRoot, rootErr := sm.CurrentStateRoot()
+		if rootErr != nil {
+			return nil, rootErr
+		}
+		if previousRoot != b.PrevStateRoot {
+			return nil, rgerrors.Newf(rgerrors.ErrBlockHeightSequenceFault,
+				"block parent state root does not match current state")
+		}
+	}
 
 	// Stateless validate all txs before touching state.
 	for _, t := range b.Txs {
@@ -336,6 +349,11 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		if err := mb.Put([]byte("baseFee"), nextFeeBuf); err != nil {
 			return err
 		}
+		if b.StateRoot != [32]byte{} && b.StateRoot != stateRoot {
+			return rgerrors.Newf(rgerrors.ErrRootMismatch,
+				"committed block state root does not match computed state root")
+		}
+		b.StateRoot = stateRoot
 		return putBlockTx(btx, b)
 	}); err != nil {
 		return nil, err

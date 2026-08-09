@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -159,7 +160,7 @@ func main() {
 			return statemachine.SerializeBlock(block)
 		})
 		catchupCtx, catchupCancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := catchUpCommittedBlocks(catchupCtx, p2pNode, sm, cfg.ChainID); err != nil {
+		if err := catchUpCommittedBlocks(catchupCtx, p2pNode, sm, s, cfg.ChainID); err != nil {
 			catchupCancel()
 			log.Fatalf("Catch up committed blocks: %v", err)
 		}
@@ -433,7 +434,15 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 	return server, ln.Addr().String(), nil
 }
 
-func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachine.StateMachine, chainID string) error {
+func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachine.StateMachine, stakingStore *staking.Store, chainID string) error {
+	validators, stakes, err := stakingStore.BondedAmounts()
+	if err != nil {
+		return err
+	}
+	validatorSet := make(map[[32]byte]struct{}, len(validators))
+	for _, validator := range validators {
+		validatorSet[validator] = struct{}{}
+	}
 	for {
 		current, err := sm.CurrentHeight()
 		if err != nil {
@@ -462,6 +471,25 @@ func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachin
 			for i, raw := range blocks {
 				block, decodeErr := statemachine.DeserializeBlock(raw)
 				if decodeErr != nil || block.Height != from+uint64(i) {
+					valid = false
+					break
+				}
+				proposal, proposalErr := consensus.DeserializeProposal(block.ProposalBytes)
+				if proposalErr != nil || !consensus.VerifyProposalForChain(proposal, chainID) {
+					valid = false
+					break
+				}
+				if _, ok := validatorSet[proposal.ProposerPK]; !ok || proposal.Height != block.Height || proposal.ProposerPK != block.ProposerPubKey || proposal.PrevStateRoot != block.PrevStateRoot {
+					valid = false
+					break
+				}
+				proposalTxs, txErr := tx.SerializeBatch(proposal.Txs)
+				blockTxs, blockErr := tx.SerializeBatch(block.Txs)
+				if txErr != nil || blockErr != nil || !bytes.Equal(proposalTxs, blockTxs) {
+					valid = false
+					break
+				}
+				if attestationErr := consensus.VerifyAttestationForChain(&proposal.PrevAttestations, validators, stakes, chainID); attestationErr != nil && len(proposal.PrevAttestations.Votes) > 0 {
 					valid = false
 					break
 				}

@@ -149,6 +149,14 @@ func ProposalSignBytesForChain(p *BlockProposal, chainID string) []byte {
 	return out
 }
 
+// VerifyProposalForChain verifies the proposer's signature for a chain.
+func VerifyProposalForChain(p *BlockProposal, chainID string) bool {
+	if p == nil {
+		return false
+	}
+	return keys.Verify(p.ProposerPK, ProposalSignBytesForChain(p, chainID), p.ProposerSig)
+}
+
 // SerializeProposal serialises a complete BlockProposal for broadcast.
 func SerializeProposal(p *BlockProposal) ([]byte, error) {
 	body, err := serializeProposalBody(p)

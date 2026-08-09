@@ -494,8 +494,14 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 		Height:         rs.Height,
 		Txs:            rs.Proposal.Txs,
 		ProposerPubKey: rs.Proposal.ProposerPK,
+		PrevStateRoot:  rs.Proposal.PrevStateRoot,
 	}
-	_, err := e.sm.ApplyBlockForChain(b, e.chainID)
+	proposalBytes, err := SerializeProposal(rs.Proposal)
+	if err != nil {
+		return false
+	}
+	b.ProposalBytes = proposalBytes
+	_, err = e.sm.ApplyBlockForChain(b, e.chainID)
 	if err != nil {
 		return false
 	}
