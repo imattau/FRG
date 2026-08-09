@@ -17,6 +17,14 @@ func TestBlockHashBindsTransactions(t *testing.T) {
 	}
 }
 
+func TestBlockHashBindsParentStateRoot(t *testing.T) {
+	p1 := &consensus.BlockProposal{Height: 2, ProposerPK: [32]byte{1}, PrevStateRoot: [32]byte{1}}
+	p2 := &consensus.BlockProposal{Height: 2, ProposerPK: [32]byte{1}, PrevStateRoot: [32]byte{2}}
+	if p1.BlockHash() == p2.BlockHash() {
+		t.Fatal("block hash must change when parent state root changes")
+	}
+}
+
 func TestVoteTypes(t *testing.T) {
 	v := consensus.Vote{
 		Type:   consensus.VotePrevote,

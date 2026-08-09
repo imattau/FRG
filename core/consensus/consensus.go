@@ -116,6 +116,10 @@ type Proposer interface {
 	OnCommit(height uint64, txs []*tx.Tx)
 }
 
+type StateRootProposer interface {
+	ProposeForState(height uint64, round uint32, prevAttest AttestationSet, prevRoot [32]byte) (*BlockProposal, error)
+}
+
 // New creates a new consensus Engine.
 func New(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMachine, n *p2p.Node, proposer Proposer, cfg TimeoutConfig) *Engine {
 	return NewWithChainID(kp, s, sm, n, proposer, cfg, tx.DefaultChainID)
@@ -283,7 +287,13 @@ func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
 	}
 	// For now, we don't have a way to get the last height's precommits easily here
 	// In a full implementation, we'd store the last round's precommits.
-	p, err := e.proposer.Propose(rs.Height, rs.Round, AttestationSet{})
+	var p *BlockProposal
+	var err error
+	if proposer, ok := e.proposer.(StateRootProposer); ok {
+		p, err = proposer.ProposeForState(rs.Height, rs.Round, AttestationSet{}, prevRoot)
+	} else {
+		p, err = e.proposer.Propose(rs.Height, rs.Round, AttestationSet{})
+	}
 	if err != nil {
 		return
 	}
@@ -373,6 +383,9 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
 	proposeTimer, prevoteTimer *time.Timer) {
 
 	if p.Height != rs.Height || p.Round != rs.Round {
+		return
+	}
+	if p.PrevStateRoot != e.prevStateRoot() {
 		return
 	}
 	if rs.Phase != PhasePropose || rs.Proposal != nil {

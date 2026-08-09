@@ -70,6 +70,25 @@ func TestApplyEmptyBlock(t *testing.T) {
 	}
 }
 
+func TestCommittedBlockReplayStorage(t *testing.T) {
+	sm, _ := openSM(t)
+	proposer := [32]byte{3}
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1, ProposerPubKey: proposer}); err != nil {
+		t.Fatal(err)
+	}
+	block, err := sm.BlockAt(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block == nil || block.Height != 1 || block.ProposerPubKey != proposer {
+		t.Fatalf("unexpected replayed block: %+v", block)
+	}
+	blocks, err := sm.Blocks(1, 1)
+	if err != nil || len(blocks) != 1 {
+		t.Fatalf("unexpected block range: len=%d err=%v", len(blocks), err)
+	}
+}
+
 func TestConsensusVoteReservationIsDurable(t *testing.T) {
 	sm, _ := openSM(t)
 	var hash [32]byte

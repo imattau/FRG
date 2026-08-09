@@ -137,6 +137,15 @@ func (bl *BlockLoop) Stop() error {
 }
 
 func (bl *BlockLoop) Propose(height uint64, round uint32, prevAttest consensus.AttestationSet) (*consensus.BlockProposal, error) {
+	return bl.propose(height, round, prevAttest, [32]byte{})
+}
+
+// ProposeForState creates a proposal bound to the exact parent state root.
+func (bl *BlockLoop) ProposeForState(height uint64, round uint32, prevAttest consensus.AttestationSet, prevRoot [32]byte) (*consensus.BlockProposal, error) {
+	return bl.propose(height, round, prevAttest, prevRoot)
+}
+
+func (bl *BlockLoop) propose(height uint64, round uint32, prevAttest consensus.AttestationSet, prevRoot [32]byte) (*consensus.BlockProposal, error) {
 	bl.mempool.mu.Lock()
 	count := len(bl.mempool.queue)
 	if count > TMax {
@@ -156,6 +165,7 @@ func (bl *BlockLoop) Propose(height uint64, round uint32, prevAttest consensus.A
 		Height:           height,
 		Round:            round,
 		ProposerPK:       bl.kp.PublicKey,
+		PrevStateRoot:    prevRoot,
 		Txs:              txs,
 		PrevAttestations: prevAttest,
 	}
@@ -166,11 +176,7 @@ func (bl *BlockLoop) Propose(height uint64, round uint32, prevAttest consensus.A
 	}
 	p.ProposerSig = sig
 
-	// Serialise and broadcast
-	// In consensus implemention, ProposalSignBytes only handled H, R, ProposerPK.
-	// Full serialisation is needed here.
-	// For now, we'll use a placeholder until full serialisation is defined.
-	// Actually, task 1 is just mempool.
+	// The consensus engine serializes and broadcasts the signed proposal.
 	return p, nil
 }
 

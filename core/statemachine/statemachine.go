@@ -54,7 +54,10 @@ func New(db *bolt.DB, l *ledger.Ledger, s *staking.Store) (*StateMachine, error)
 		if _, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode")); err != nil {
 			return err
 		}
-		_, err := btx.CreateBucketIfNotExists([]byte("contract_state"))
+		if _, err := btx.CreateBucketIfNotExists([]byte("contract_state")); err != nil {
+			return err
+		}
+		_, err := btx.CreateBucketIfNotExists(blocksBucket)
 		return err
 	}); err != nil {
 		return nil, err
@@ -330,7 +333,10 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		}
 		nextBaseFee := gas.BaseFee(baseFee, totalGas)
 		nextFeeBuf := nextBaseFee.Bytes()
-		return mb.Put([]byte("baseFee"), nextFeeBuf)
+		if err := mb.Put([]byte("baseFee"), nextFeeBuf); err != nil {
+			return err
+		}
+		return putBlockTx(btx, b)
 	}); err != nil {
 		return nil, err
 	}

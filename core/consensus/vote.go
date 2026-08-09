@@ -106,6 +106,7 @@ type BlockProposal struct {
 	Height           uint64
 	Round            uint32
 	ProposerPK       [32]byte
+	PrevStateRoot    [32]byte
 	Txs              []*tx.Tx
 	PrevAttestations AttestationSet // 2/3+ precommits from height-1 (empty at height 1)
 	ProposerSig      [64]byte       // Ed25519 sig over H(FRG_PROPOSAL_V1\x00 ∥ serialised fields excl. sig)
@@ -162,7 +163,7 @@ func SerializeProposal(p *BlockProposal) ([]byte, error) {
 
 // DeserializeProposal parses a serialised BlockProposal.
 func DeserializeProposal(data []byte) (*BlockProposal, error) {
-	if len(data) < 64+8+4+32+8+4+32+4 {
+	if len(data) < 64+8+4+32+32+8+4+32+4 {
 		return nil, fmt.Errorf("proposal too short")
 	}
 	p := &BlockProposal{}
@@ -174,6 +175,8 @@ func DeserializeProposal(data []byte) (*BlockProposal, error) {
 	p.Round = binary.BigEndian.Uint32(body[off:])
 	off += 4
 	copy(p.ProposerPK[:], body[off:])
+	off += 32
+	copy(p.PrevStateRoot[:], body[off:])
 	off += 32
 	// attestation
 	p.PrevAttestations.Height = binary.BigEndian.Uint64(body[off:])
@@ -244,6 +247,7 @@ func serializeProposalBody(p *BlockProposal) ([]byte, error) {
 	binary.BigEndian.PutUint32(tmp4[:], p.Round)
 	buf.Write(tmp4[:])
 	buf.Write(p.ProposerPK[:])
+	buf.Write(p.PrevStateRoot[:])
 	binary.BigEndian.PutUint64(tmp8[:], p.PrevAttestations.Height)
 	buf.Write(tmp8[:])
 	binary.BigEndian.PutUint32(tmp4[:], p.PrevAttestations.Round)
