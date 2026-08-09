@@ -76,10 +76,11 @@ type P2PConfig struct {
 }
 
 type GRPCConfig struct {
-	Listen          string `toml:"listen"`
-	TLSCertFile     string `toml:"tls_cert_file"`
-	TLSKeyFile      string `toml:"tls_key_file"`
-	TLSClientCAFile string `toml:"tls_client_ca_file"`
+	Listen          string            `toml:"listen"`
+	TLSCertFile     string            `toml:"tls_cert_file"`
+	TLSKeyFile      string            `toml:"tls_key_file"`
+	TLSClientCAFile string            `toml:"tls_client_ca_file"`
+	ClientRoles     map[string]string `toml:"client_roles"`
 }
 
 type MetricsConfig struct {
@@ -190,7 +191,7 @@ func main() {
 		log.Printf("metrics endpoint listening on %s", metricsAddr)
 	}
 
-	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, cfg.GRPC.TLSClientCAFile, cfg.ChainID, runtime, metrics)
+	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, cfg.GRPC.TLSClientCAFile, cfg.GRPC.ClientRoles, cfg.ChainID, runtime, metrics)
 	if err != nil {
 		log.Fatalf("Init gRPC: %v", err)
 	}
@@ -399,7 +400,7 @@ func ensureParentDir(path string) error {
 	return nil
 }
 
-func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string, node nodeRuntimeAPI, metrics *nodeMetrics) (*grpc.Server, string, error) {
+func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile string, clientRoles map[string]string, chainID string, node nodeRuntimeAPI, metrics *nodeMetrics) (*grpc.Server, string, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, "", fmt.Errorf("listen %s: %w", listenAddr, err)
@@ -416,6 +417,11 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 	if requiresGRPCTLS(listenAddr) && (certFile == "" || keyFile == "" || clientCAFile == "") {
 		_ = ln.Close()
 		return nil, "", fmt.Errorf("non-loopback gRPC listeners require mutual TLS")
+	}
+	authorizer, err := newRPCAuthorizer(clientRoles, requiresGRPCTLS(listenAddr) || len(clientRoles) > 0)
+	if err != nil {
+		_ = ln.Close()
+		return nil, "", fmt.Errorf("configure RPC authorization: %w", err)
 	}
 	serverOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(8 << 20)}
 	if certFile != "" {
@@ -445,7 +451,7 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
 	server := grpc.NewServer(serverOpts...)
-	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID, limiter: newSubmitLimiter(), metrics: metrics})
+	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID, limiter: newSubmitLimiter(), metrics: metrics, authorizer: authorizer})
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(server, healthServer)

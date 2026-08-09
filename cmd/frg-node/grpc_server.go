@@ -95,12 +95,13 @@ type nodeQueryAPI interface {
 
 type nodeGRPCServer struct {
 	frgpb.UnimplementedFRGServer
-	node    nodeAPI
-	stat    nodeStatusAPI
-	query   nodeQueryAPI
-	chainID string
-	limiter *submitLimiter
-	metrics *nodeMetrics
+	node       nodeAPI
+	stat       nodeStatusAPI
+	query      nodeQueryAPI
+	chainID    string
+	limiter    *submitLimiter
+	metrics    *nodeMetrics
+	authorizer *rpcAuthorizer
 }
 
 func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frgpb.SubmitResponse, error) {
@@ -108,6 +109,12 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 		s.metrics.rpcRequests.Add(1)
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.authorizer.authorize(ctx, roleSubmitter); err != nil {
+		if s.metrics != nil {
+			s.metrics.rpcRejected.Add(1)
+		}
 		return nil, err
 	}
 	if in == nil || len(in.Data) > tx.MaxSerializedBytes {
@@ -144,6 +151,12 @@ func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArra
 		s.metrics.rpcRequests.Add(1)
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.authorizer.authorize(ctx, roleSubmitter); err != nil {
+		if s.metrics != nil {
+			s.metrics.rpcRejected.Add(1)
+		}
 		return nil, err
 	}
 	if in == nil || len(in.Data) == 0 || len(in.Data) > 1024 {
@@ -183,6 +196,9 @@ func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArra
 }
 
 func (s *nodeGRPCServer) SubscribeBlocks(_ *frgpb.Empty, stream frgpb.FRG_SubscribeBlocksServer) error {
+	if err := s.authorizer.authorize(stream.Context(), roleObserver); err != nil {
+		return err
+	}
 	blocks := s.node.SubscribeBlockHeaders()
 	for {
 		select {
@@ -200,14 +216,20 @@ func (s *nodeGRPCServer) SubscribeBlocks(_ *frgpb.Empty, stream frgpb.FRG_Subscr
 	}
 }
 
-func (s *nodeGRPCServer) GetStatus(context.Context, *frgpb.Empty) (*frgpb.StatusResponse, error) {
+func (s *nodeGRPCServer) GetStatus(ctx context.Context, _ *frgpb.Empty) (*frgpb.StatusResponse, error) {
+	if err := s.authorizer.authorize(ctx, roleObserver); err != nil {
+		return nil, err
+	}
 	if s.stat == nil {
 		return &frgpb.StatusResponse{}, nil
 	}
 	return s.stat.Status()
 }
 
-func (s *nodeGRPCServer) GetAccount(_ context.Context, req *frgpb.AccountRequest) (*frgpb.AccountResponse, error) {
+func (s *nodeGRPCServer) GetAccount(ctx context.Context, req *frgpb.AccountRequest) (*frgpb.AccountResponse, error) {
+	if err := s.authorizer.authorize(ctx, roleObserver); err != nil {
+		return nil, err
+	}
 	if s.query == nil {
 		return nil, fmt.Errorf("query backend not available")
 	}
@@ -219,14 +241,20 @@ func (s *nodeGRPCServer) GetAccount(_ context.Context, req *frgpb.AccountRequest
 	return s.query.GetAccount(pubkey)
 }
 
-func (s *nodeGRPCServer) ListValidators(context.Context, *frgpb.Empty) (*frgpb.ValidatorList, error) {
+func (s *nodeGRPCServer) ListValidators(ctx context.Context, _ *frgpb.Empty) (*frgpb.ValidatorList, error) {
+	if err := s.authorizer.authorize(ctx, roleObserver); err != nil {
+		return nil, err
+	}
 	if s.query == nil {
 		return nil, fmt.Errorf("query backend not available")
 	}
 	return s.query.ListValidators()
 }
 
-func (s *nodeGRPCServer) ListMempool(context.Context, *frgpb.Empty) (*frgpb.MempoolList, error) {
+func (s *nodeGRPCServer) ListMempool(ctx context.Context, _ *frgpb.Empty) (*frgpb.MempoolList, error) {
+	if err := s.authorizer.authorize(ctx, roleObserver); err != nil {
+		return nil, err
+	}
 	if s.query == nil {
 		return nil, fmt.Errorf("query backend not available")
 	}
