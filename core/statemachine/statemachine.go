@@ -125,22 +125,22 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 	mintAmount := mint.MintPerBlock(totalSupply, totalStaked)
 
 	var stateRoot [32]byte
-	transferGas := new(big.Int)
-	contractGas := uint64(0)
+	totalGas := uint64(0)
+	txFuels := make(map[int]uint64) // tx index → fuel consumed (contract txs only)
 
 	// Single atomic write: contracts, transfers, state root, gas, miss-evidence, mint, meta.
 	if err := sm.db.Update(func(btx *bolt.Tx) error {
 		touchedContracts := make(map[[32]byte]struct{})
 
-		// 0. Execute contract deployments and calls.
-		for _, t := range b.Txs {
+		// 0. Execute contract deployments and calls, tracking fuel per tx.
+		for i, t := range b.Txs {
 			switch t.Type {
 			case tx.TxTypeContractDeploy:
 				_, fuelUsed, err := contract.Deploy(btx, sm.ledger, t, b.Height)
 				if err != nil {
 					return err
 				}
-				contractGas += fuelUsed
+				txFuels[i] = fuelUsed
 				addr := contract.ContractAddr(t.SenderPubKey, t.Nonce)
 				touchedContracts[addr] = struct{}{}
 			case tx.TxTypeContractCall:
@@ -148,7 +148,7 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 				if err != nil {
 					return err
 				}
-				contractGas += fuelUsed
+				txFuels[i] = fuelUsed
 				touchedContracts[t.ReceiverPubKey] = struct{}{}
 			}
 		}
@@ -162,7 +162,7 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 			}
 		}
 
-		// 2. Build contract state RG nodes from ALL contracts with persisted state.
+		// 2. Build contract state RG nodes.
 		contractNodes := make([]*node.RGNode, 0, len(touchedContracts))
 		for addr := range touchedContracts {
 			stateRoot := contract.LoadStateRoot(btx, addr)
@@ -192,31 +192,21 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 		}
 		stateRoot = root
 
-		// 4. Burn gas: transfer gas + contract gas.
-		for _, t := range b.Txs {
-			if t.Type == tx.TxTypeTransfer || t.Type == tx.TxTypeContractDeploy || t.Type == tx.TxTypeContractCall {
-				if baseFee.Sign() > 0 {
-					if err := sm.ledger.BurnTx(btx, t.SenderPubKey, baseFee); err != nil {
-						return err
-					}
-					transferGas.Add(transferGas, baseFee)
-				}
+		// 4. Charge gas per tx: base gas (1 unit) + contract compute gas (fuel/FuelUnitsPerGas).
+		//    gas_price = baseFee. fee = gas_used * baseFee.
+		for i, t := range b.Txs {
+			if baseFee.Sign() == 0 {
+				continue
 			}
-		}
-
-		// Charge contract compute gas: fuel / FuelUnitsPerGas * baseFee (floor).
-		if contractGas > 0 {
-			gasUnits := contractGas / contract.FuelUnitsPerGas
-			if gasUnits > 0 {
-				contractFee := new(big.Int).Mul(baseFee, new(big.Int).SetUint64(gasUnits))
-				for _, t := range b.Txs {
-					if t.Type == tx.TxTypeContractDeploy || t.Type == tx.TxTypeContractCall {
-						if err := sm.ledger.BurnTx(btx, t.SenderPubKey, contractFee); err != nil {
-							return err
-						}
-					}
-				}
+			gasUnits := uint64(1) // base gas per tx
+			if fuelUsed, ok := txFuels[i]; ok {
+				gasUnits += fuelUsed / contract.FuelUnitsPerGas
 			}
+			fee := new(big.Int).Mul(baseFee, new(big.Int).SetUint64(gasUnits))
+			if err := sm.ledger.BurnTx(btx, t.SenderPubKey, fee); err != nil {
+				return err
+			}
+			totalGas += gasUnits
 		}
 
 		// 5. Apply miss-evidence side effects.
@@ -242,7 +232,7 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 			}
 		}
 
-		// 7. Persist meta.
+		// 7. Persist meta. Base fee adjusts on total gas consumed, not tx count.
 		mb := btx.Bucket(metaBucket)
 		heightBuf := make([]byte, 8)
 		binary.BigEndian.PutUint64(heightBuf, b.Height)
@@ -252,20 +242,14 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 		if err := mb.Put([]byte("stateRoot"), stateRoot[:]); err != nil {
 			return err
 		}
-		nextBaseFee := gas.BaseFee(baseFee, uint64(len(b.Txs)))
+		nextBaseFee := gas.BaseFee(baseFee, totalGas)
 		nextFeeBuf := nextBaseFee.Bytes()
 		return mb.Put([]byte("baseFee"), nextFeeBuf)
 	}); err != nil {
 		return nil, err
 	}
 
-	// Compute total gas burned for result.
-	gasBurned := new(big.Int).Set(transferGas)
-	if contractGas > 0 {
-		gasUnits := contractGas / contract.FuelUnitsPerGas
-		contractFee := new(big.Int).Mul(baseFee, new(big.Int).SetUint64(gasUnits))
-		gasBurned.Add(gasBurned, contractFee)
-	}
+	gasBurned := new(big.Int).Mul(baseFee, new(big.Int).SetUint64(totalGas))
 
 	return &Result{
 		StateRoot:  stateRoot,

@@ -10,6 +10,7 @@ import (
 
 const (
 	TargetTxCount            = uint64(32768)
+	TargetGasPerBlock        = TargetTxCount
 	MaxAdjustmentNumerator   = uint64(1)
 	MaxAdjustmentDenominator = uint64(8)
 	ValidatorSharePct        = uint64(70)
@@ -30,24 +31,26 @@ func FeeAccount(validator [32]byte) [32]byte {
 	return out
 }
 
-// BaseFee computes the next block's base fee. Never falls below MinBaseFee.
-func BaseFee(prevBaseFee *big.Int, txCount uint64) *big.Int {
+// BaseFee computes the next block's base fee from gas used in the current block.
+// Gas is measured in protocol gas units (1 transfer = 1 gas; contract gas = fuel/FuelUnitsPerGas).
+// Never falls below MinBaseFee.
+func BaseFee(prevBaseFee *big.Int, gasUsed uint64) *big.Int {
 	if prevBaseFee == nil {
 		return new(big.Int).Set(MinBaseFee)
 	}
 
 	next := new(big.Int).Set(prevBaseFee)
-	target := new(big.Int).SetUint64(TargetTxCount)
+	target := new(big.Int).SetUint64(TargetGasPerBlock)
 	denom := new(big.Int).SetUint64(MaxAdjustmentDenominator)
 
-	if txCount > TargetTxCount {
-		diff := new(big.Int).SetUint64(txCount - TargetTxCount)
+	if gasUsed > TargetGasPerBlock {
+		diff := new(big.Int).SetUint64(gasUsed - TargetGasPerBlock)
 		delta := new(big.Int).Mul(prevBaseFee, diff)
 		delta.Div(delta, target)
 		delta.Div(delta, denom)
 		next.Add(next, delta)
-	} else if txCount < TargetTxCount {
-		diff := new(big.Int).SetUint64(TargetTxCount - txCount)
+	} else if gasUsed < TargetGasPerBlock {
+		diff := new(big.Int).SetUint64(TargetGasPerBlock - gasUsed)
 		delta := new(big.Int).Mul(prevBaseFee, diff)
 		delta.Div(delta, target)
 		delta.Div(delta, denom)
