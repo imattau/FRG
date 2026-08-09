@@ -10,11 +10,11 @@ coverage.out
 # Local Go toolchain/cache directories
 /.gocache/
 /.toolchain/
-frg-faucet
-frg-node
-frg-cli
-frg-devnet
-frg-analysis
+/frg-faucet
+/frg-node
+/frg-cli
+/frg-devnet
+/frg-analysis
 
 # Python
 __pycache__/
