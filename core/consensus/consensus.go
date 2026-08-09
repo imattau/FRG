@@ -283,6 +283,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 				rs.Phase = PhaseCommit
 				e.setStatus(rs)
 				e.commit(rs, blockHash)
+				e.startNextRound(rs, validators, stakes, proposeTimer)
 			}
 		}
 	}
@@ -385,7 +386,24 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) {
 	if e.proposer != nil {
 		e.proposer.OnCommit(rs.Height, rs.Proposal.Txs)
 	}
-	// Advance to next height — block production loop will handle tx selection.
+}
+
+func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer *time.Timer) {
+	rs.Height++
+	rs.Round = 0
+	rs.Phase = PhasePropose
+	rs.Proposal = nil
+	rs.Prevotes = make(map[[32]byte]Vote)
+	rs.Precommits = make(map[[32]byte]Vote)
+	rs.LockedBlock = nil
+	e.setStatus(rs)
+
+	prevRoot := e.prevStateRoot()
+	proposerPK, _ := leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
+	proposeTimer.Reset(e.timeouts.Propose)
+	if proposerPK == e.kp.PublicKey {
+		e.broadcastProposal(rs, prevRoot)
+	}
 }
 
 func (e *Engine) quorumBlock(votes map[[32]byte]Vote, validators [][32]byte, stakes []*big.Int) ([32]byte, bool) {
