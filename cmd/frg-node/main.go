@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -31,6 +32,8 @@ import (
 	bolt "go.etcd.io/bbolt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
 const (
@@ -67,9 +70,10 @@ type P2PConfig struct {
 }
 
 type GRPCConfig struct {
-	Listen      string `toml:"listen"`
-	TLSCertFile string `toml:"tls_cert_file"`
-	TLSKeyFile  string `toml:"tls_key_file"`
+	Listen          string `toml:"listen"`
+	TLSCertFile     string `toml:"tls_cert_file"`
+	TLSKeyFile      string `toml:"tls_key_file"`
+	TLSClientCAFile string `toml:"tls_client_ca_file"`
 }
 
 type ConsensusConfig struct {
@@ -153,7 +157,7 @@ func main() {
 		log.Printf("grpc-only mode enabled; skipping P2P/blockloop startup")
 	}
 
-	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, runtime)
+	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, cfg.GRPC.TLSClientCAFile, cfg.ChainID, runtime)
 	if err != nil {
 		log.Fatalf("Init gRPC: %v", err)
 	}
@@ -163,7 +167,7 @@ func main() {
 	var bl *blockloop.BlockLoop
 	var engine *consensus.Engine
 	if !*grpcOnly && p2pNode != nil {
-		bl = blockloop.New(kp, p2pNode)
+		bl = blockloop.NewWithChainID(kp, p2pNode, cfg.ChainID)
 		runtime.blockloop = bl
 		if err := bl.Start(ctx); err != nil {
 			log.Fatalf("Start blockloop: %v", err)
@@ -177,7 +181,7 @@ func main() {
 			Precommit:    time.Duration(cfg.Consensus.PrecommitTimeoutMS) * time.Millisecond,
 		}
 
-		engine = consensus.New(kp, s, sm, p2pNode, bl, timeoutCfg)
+		engine = consensus.NewWithChainID(kp, s, sm, p2pNode, bl, timeoutCfg, cfg.ChainID)
 		runtime.engine = engine
 
 		go func() {
@@ -356,7 +360,7 @@ func ensureParentDir(path string) error {
 	return nil
 }
 
-func startGRPCServer(listenAddr, certFile, keyFile string, node nodeRuntimeAPI) (*grpc.Server, string, error) {
+func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string, node nodeRuntimeAPI) (*grpc.Server, string, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, "", fmt.Errorf("listen %s: %w", listenAddr, err)
@@ -366,9 +370,13 @@ func startGRPCServer(listenAddr, certFile, keyFile string, node nodeRuntimeAPI) 
 		_ = ln.Close()
 		return nil, "", fmt.Errorf("TLS certificate and key must be configured together")
 	}
-	if requiresGRPCTLS(listenAddr) && (certFile == "" || keyFile == "") {
+	if certFile == "" && clientCAFile != "" {
 		_ = ln.Close()
-		return nil, "", fmt.Errorf("non-loopback gRPC listeners require TLS")
+		return nil, "", fmt.Errorf("TLS client CA requires a server certificate")
+	}
+	if requiresGRPCTLS(listenAddr) && (certFile == "" || keyFile == "" || clientCAFile == "") {
+		_ = ln.Close()
+		return nil, "", fmt.Errorf("non-loopback gRPC listeners require mutual TLS")
 	}
 	serverOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(8 << 20)}
 	if certFile != "" {
@@ -377,13 +385,31 @@ func startGRPCServer(listenAddr, certFile, keyFile string, node nodeRuntimeAPI) 
 			_ = ln.Close()
 			return nil, "", fmt.Errorf("load gRPC TLS certificate: %w", err)
 		}
-		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(&tls.Config{
+		tlsConfig := &tls.Config{
 			MinVersion:   tls.VersionTLS13,
 			Certificates: []tls.Certificate{cert},
-		})))
+		}
+		if clientCAFile != "" {
+			caPEM, err := os.ReadFile(clientCAFile)
+			if err != nil {
+				_ = ln.Close()
+				return nil, "", fmt.Errorf("read gRPC client CA: %w", err)
+			}
+			clientCAs := x509.NewCertPool()
+			if !clientCAs.AppendCertsFromPEM(caPEM) {
+				_ = ln.Close()
+				return nil, "", fmt.Errorf("parse gRPC client CA")
+			}
+			tlsConfig.ClientCAs = clientCAs
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
 	server := grpc.NewServer(serverOpts...)
-	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node})
+	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID})
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	grpc_health_v1.RegisterHealthServer(server, healthServer)
 
 	go func() {
 		if err := server.Serve(ln); err != nil {

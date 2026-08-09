@@ -18,6 +18,7 @@ import (
 
 var metaBucket = []byte("meta")
 var genesisAppliedKey = []byte("genesisApplied")
+var consensusVotePrefix = []byte("consensusVote/")
 
 // Block is the input to ApplyBlock.
 type Block struct {
@@ -115,9 +116,38 @@ func (sm *StateMachine) Update(fn func(*bolt.Tx) error) error {
 	return sm.db.Update(fn)
 }
 
-// ApplyBlock applies b to the state machine. All writes are atomic: any error
-// rolls back the entire block and returns the error.
+// RecordConsensusVote durably reserves a validator vote slot. It returns true
+// only when this is the first vote for (height, round, type), preventing a
+// restarted process from signing a conflicting vote for the same slot.
+func (sm *StateMachine) RecordConsensusVote(height uint64, round uint32, voteType uint8, blockHash [32]byte) bool {
+	key := make([]byte, len(consensusVotePrefix)+8+4+1)
+	copy(key, consensusVotePrefix)
+	binary.BigEndian.PutUint64(key[len(consensusVotePrefix):], height)
+	binary.BigEndian.PutUint32(key[len(consensusVotePrefix)+8:], round)
+	key[len(consensusVotePrefix)+12] = voteType
+	accepted := false
+	_ = sm.db.Update(func(btx *bolt.Tx) error {
+		mb := btx.Bucket(metaBucket)
+		if existing := mb.Get(key); existing != nil {
+			return nil
+		}
+		if err := mb.Put(key, blockHash[:]); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
+	})
+	return accepted
+}
+
+// ApplyBlock applies a mainnet-domain block to the state machine.
 func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
+	return sm.ApplyBlockForChain(b, tx.DefaultChainID)
+}
+
+// ApplyBlockForChain applies b using signatures bound to chainID. All writes
+// are atomic: any error rolls back the entire block and returns the error.
+func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, error) {
 	cur, err := sm.CurrentHeight()
 	if err != nil {
 		return nil, err
@@ -129,7 +159,7 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 
 	// Stateless validate all txs before touching state.
 	for _, t := range b.Txs {
-		if err := t.VerifySigs(); err != nil {
+		if err := t.VerifySigsForChain(chainID); err != nil {
 			return nil, err
 		}
 	}

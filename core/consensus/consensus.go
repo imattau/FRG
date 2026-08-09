@@ -105,6 +105,7 @@ type Engine struct {
 	timeouts TimeoutConfig
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	chainID  string
 	mu       sync.RWMutex
 	status   EngineStatus
 }
@@ -117,6 +118,14 @@ type Proposer interface {
 
 // New creates a new consensus Engine.
 func New(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMachine, n *p2p.Node, proposer Proposer, cfg TimeoutConfig) *Engine {
+	return NewWithChainID(kp, s, sm, n, proposer, cfg, tx.DefaultChainID)
+}
+
+// NewWithChainID creates an engine whose signed messages are chain-bound.
+func NewWithChainID(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMachine, n *p2p.Node, proposer Proposer, cfg TimeoutConfig, chainID string) *Engine {
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
 	return &Engine{
 		kp:       kp,
 		staking:  s,
@@ -125,6 +134,7 @@ func New(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMachine, n *p
 		proposer: proposer,
 		timeouts: cfg,
 		stopCh:   make(chan struct{}),
+		chainID:  chainID,
 	}
 }
 
@@ -268,7 +278,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 	if v.Height != rs.Height || v.Round != rs.Round {
 		return
 	}
-	if !VerifyVote(v) {
+	if !VerifyVoteForChain(v, e.chainID) {
 		return
 	}
 	validator := false
@@ -315,6 +325,11 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 				rs.Phase = PhaseCommit
 				e.setStatus(rs)
 				if e.commit(rs, blockHash) {
+					var refreshErr error
+					validators, stakes, refreshErr = e.staking.BondedAmounts()
+					if refreshErr != nil {
+						return
+					}
 					e.startNextRound(rs, validators, stakes, proposeTimer)
 				}
 			}
@@ -336,7 +351,12 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
 		return
 	}
 	for _, t := range p.Txs {
-		if err := t.VerifySigs(); err != nil {
+		if err := t.VerifySigsForChain(e.chainID); err != nil {
+			return
+		}
+	}
+	if len(p.PrevAttestations.Votes) > 0 {
+		if err := VerifyAttestationForChain(&p.PrevAttestations, validators, stakes, e.chainID); err != nil {
 			return
 		}
 	}
@@ -345,7 +365,7 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
 	e.setStatus(rs)
 	proposeTimer.Stop()
 
-	blockHash := p.BlockHash()
+	blockHash := p.BlockHashForChain(e.chainID)
 
 	// Lock rule: if locked on a different block, prevote nil unless we see 2/3+ for new block.
 	if rs.LockedBlock != nil && *rs.LockedBlock != blockHash {
@@ -377,11 +397,14 @@ func (e *Engine) onPrevoteTimeout(rs *RoundState, validators [][32]byte, stakes 
 }
 
 func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) {
+	if !e.sm.RecordConsensusVote(rs.Height, rs.Round, uint8(VotePrevote), blockHash) {
+		return
+	}
 	v := &Vote{
 		Type: VotePrevote, Height: rs.Height, Round: rs.Round,
 		BlockHash: blockHash, ValidatorPK: e.kp.PublicKey,
 	}
-	body := VoteSignBytes(v)
+	body := VoteSignBytesForChain(v, e.chainID)
 	sig, err := e.kp.Sign(body)
 	if err != nil {
 		return
@@ -395,11 +418,14 @@ func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) {
 }
 
 func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
+	if !e.sm.RecordConsensusVote(rs.Height, rs.Round, uint8(VotePrecommit), blockHash) {
+		return
+	}
 	v := &Vote{
 		Type: VotePrecommit, Height: rs.Height, Round: rs.Round,
 		BlockHash: blockHash, ValidatorPK: e.kp.PublicKey,
 	}
-	body := VoteSignBytes(v)
+	body := VoteSignBytesForChain(v, e.chainID)
 	sig, err := e.kp.Sign(body)
 	if err != nil {
 		return
@@ -413,7 +439,7 @@ func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
 }
 
 func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
-	if rs.Proposal == nil || rs.Proposal.BlockHash() != blockHash {
+	if rs.Proposal == nil || rs.Proposal.BlockHashForChain(e.chainID) != blockHash {
 		return false
 	}
 	b := &statemachine.Block{
@@ -421,7 +447,7 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 		Txs:            rs.Proposal.Txs,
 		ProposerPubKey: rs.Proposal.ProposerPK,
 	}
-	_, err := e.sm.ApplyBlock(b)
+	_, err := e.sm.ApplyBlockForChain(b, e.chainID)
 	if err != nil {
 		return false
 	}
@@ -487,7 +513,7 @@ func (e *Engine) parseProposal(raw []byte) *BlockProposal {
 	if err != nil {
 		return nil
 	}
-	if !keys.Verify(p.ProposerPK, ProposalSignBytes(p), p.ProposerSig) {
+	if !keys.Verify(p.ProposerPK, ProposalSignBytesForChain(p, e.chainID), p.ProposerSig) {
 		return nil
 	}
 	return p

@@ -13,6 +13,8 @@ import (
 
 const maxTxBytes = 70000
 
+const DefaultChainID = "frg-mainnet-1"
+
 // MaxSerializedBytes is the maximum accepted serialized transaction size.
 const MaxSerializedBytes = maxTxBytes
 
@@ -135,11 +137,16 @@ func (t *Tx) serializeUnsigned() ([]byte, error) {
 
 // UnsignedHash returns H(Tx_Bytes_unsigned), the message both parties sign.
 func (t *Tx) UnsignedHash() ([32]byte, error) {
+	return t.UnsignedHashForChain(DefaultChainID)
+}
+
+// UnsignedHashForChain binds the transaction signature to a chain identity.
+func (t *Tx) UnsignedHashForChain(chainID string) ([32]byte, error) {
 	serialized, err := t.serializeUnsigned()
 	if err != nil {
 		return [32]byte{}, err
 	}
-	return hash.Hash(serialized), nil
+	return hash.Hash(chainDomainBytes(chainID, serialized)), nil
 }
 
 func (t *Tx) Serialize() ([]byte, error) {
@@ -327,7 +334,12 @@ func Deserialize(data []byte) (*Tx, error) {
 // MISS_EVIDENCE: verifies only SenderSig.
 // CONTRACT_DEPLOY / CONTRACT_CALL: verifies only SenderSig (single-sig).
 func (t *Tx) VerifySigs() error {
-	msg, err := t.UnsignedHash()
+	return t.VerifySigsForChain(DefaultChainID)
+}
+
+// VerifySigsForChain verifies signatures against a specific chain identity.
+func (t *Tx) VerifySigsForChain(chainID string) error {
+	msg, err := t.UnsignedHashForChain(chainID)
 	if err != nil {
 		return err
 	}
@@ -351,7 +363,12 @@ func (t *Tx) VerifySigs() error {
 }
 
 func (t *Tx) SignSender(kp *keys.Keypair) ([64]byte, error) {
-	msg, err := t.UnsignedHash()
+	return t.SignSenderForChain(kp, DefaultChainID)
+}
+
+// SignSenderForChain signs a transaction for a specific chain identity.
+func (t *Tx) SignSenderForChain(kp *keys.Keypair, chainID string) ([64]byte, error) {
+	msg, err := t.UnsignedHashForChain(chainID)
 	if err != nil {
 		return [64]byte{}, err
 	}
@@ -359,11 +376,29 @@ func (t *Tx) SignSender(kp *keys.Keypair) ([64]byte, error) {
 }
 
 func (t *Tx) SignReceiver(kp *keys.Keypair) ([64]byte, error) {
-	msg, err := t.UnsignedHash()
+	return t.SignReceiverForChain(kp, DefaultChainID)
+}
+
+// SignReceiverForChain signs a transaction for a specific chain identity.
+func (t *Tx) SignReceiverForChain(kp *keys.Keypair, chainID string) ([64]byte, error) {
+	msg, err := t.UnsignedHashForChain(chainID)
 	if err != nil {
 		return [64]byte{}, err
 	}
 	return kp.Sign(msg[:])
+}
+
+func chainDomainBytes(chainID string, payload []byte) []byte {
+	if chainID == "" {
+		chainID = DefaultChainID
+	}
+	buf := make([]byte, 0, len("FRG_CHAIN_V1\x00")+2+len(chainID)+len(payload))
+	buf = append(buf, []byte("FRG_CHAIN_V1\x00")...)
+	var length [2]byte
+	binary.BigEndian.PutUint16(length[:], uint16(len(chainID)))
+	buf = append(buf, length[:]...)
+	buf = append(buf, chainID...)
+	return append(buf, payload...)
 }
 
 // SerializeBatch bundles multiple transactions into a single byte slice.

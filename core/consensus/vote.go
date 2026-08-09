@@ -60,26 +60,45 @@ func DeserializeVote(data []byte) (*Vote, error) {
 
 // VoteSignBytes returns the bytes to be signed for a vote.
 func VoteSignBytes(v *Vote) []byte {
+	return VoteSignBytesForChain(v, tx.DefaultChainID)
+}
+
+// VoteSignBytesForChain binds a vote signature to a chain identity.
+func VoteSignBytesForChain(v *Vote, chainID string) []byte {
 	// FRG_VOTE_V1\x00 (12 bytes)
 	// Type            (uint8, 1 byte)
 	// Height          (uint64 big-endian, 8 bytes)
 	// Round           (uint32 big-endian, 4 bytes)
 	// BlockHash       (32 bytes)
-	buf := make([]byte, 12+1+8+4+32)
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
+	buf := make([]byte, 12+2+len(chainID)+1+8+4+32)
 	copy(buf[0:12], "FRG_VOTE_V1\x00")
-	buf[12] = uint8(v.Type)
-	binary.BigEndian.PutUint64(buf[13:21], v.Height)
-	binary.BigEndian.PutUint32(buf[21:25], v.Round)
-	copy(buf[25:57], v.BlockHash[:])
+	binary.BigEndian.PutUint16(buf[12:14], uint16(len(chainID)))
+	copy(buf[14:14+len(chainID)], chainID)
+	off := 14 + len(chainID)
+	buf[off] = uint8(v.Type)
+	off++
+	binary.BigEndian.PutUint64(buf[off:off+8], v.Height)
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:off+4], v.Round)
+	off += 4
+	copy(buf[off:off+32], v.BlockHash[:])
 	return buf
 }
 
 // VerifyVote checks the Ed25519 signature of the vote.
 func VerifyVote(v *Vote) bool {
+	return VerifyVoteForChain(v, tx.DefaultChainID)
+}
+
+// VerifyVoteForChain verifies a vote for a specific chain identity.
+func VerifyVoteForChain(v *Vote, chainID string) bool {
 	if v == nil || (v.Type != VotePrevote && v.Type != VotePrecommit) {
 		return false
 	}
-	body := VoteSignBytes(v)
+	body := VoteSignBytesForChain(v, chainID)
 	return keys.Verify(v.ValidatorPK, body, v.Sig)
 }
 
@@ -99,14 +118,30 @@ const (
 
 // BlockHash returns H(FRG_PROPOSAL_V1\x00 ∥ serialised proposal fields excl. sig).
 func (p *BlockProposal) BlockHash() [32]byte {
-	return sha256.Sum256(ProposalSignBytes(p))
+	return p.BlockHashForChain(tx.DefaultChainID)
+}
+
+// BlockHashForChain returns the proposal hash for a specific chain identity.
+func (p *BlockProposal) BlockHashForChain(chainID string) [32]byte {
+	return sha256.Sum256(ProposalSignBytesForChain(p, chainID))
 }
 
 // ProposalSignBytes returns the bytes signed by the proposer.
 // Covers all fields except ProposerSig itself.
 func ProposalSignBytes(p *BlockProposal) []byte {
+	return ProposalSignBytesForChain(p, tx.DefaultChainID)
+}
+
+// ProposalSignBytesForChain binds proposal signatures to a chain identity.
+func ProposalSignBytesForChain(p *BlockProposal, chainID string) []byte {
 	body, _ := serializeProposalBody(p)
-	prefix := []byte("FRG_PROPOSAL_V1\x00")
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
+	prefix := make([]byte, 12+2+len(chainID))
+	copy(prefix[:12], "FRG_PROPOSAL_V1\x00")
+	binary.BigEndian.PutUint16(prefix[12:14], uint16(len(chainID)))
+	copy(prefix[14:], chainID)
 	out := make([]byte, len(prefix)+len(body))
 	copy(out, prefix)
 	copy(out[len(prefix):], body)
@@ -244,6 +279,11 @@ type AttestationSet struct {
 
 // VerifyAttestation checks that the attestation set is valid.
 func VerifyAttestation(as *AttestationSet, validators [][32]byte, stakes []*big.Int) error {
+	return VerifyAttestationForChain(as, validators, stakes, tx.DefaultChainID)
+}
+
+// VerifyAttestationForChain verifies an attestation for a specific chain.
+func VerifyAttestationForChain(as *AttestationSet, validators [][32]byte, stakes []*big.Int, chainID string) error {
 	if as == nil || len(as.Votes) == 0 {
 		return errors.New("empty attestation set")
 	}
@@ -273,7 +313,7 @@ func VerifyAttestation(as *AttestationSet, validators [][32]byte, stakes []*big.
 		if _, dup := seen[vote.ValidatorPK]; dup {
 			return errors.New("attestation contains duplicate validator vote")
 		}
-		if !VerifyVote(&vote) {
+		if !VerifyVoteForChain(&vote, chainID) {
 			return errors.New("attestation contains invalid vote signature")
 		}
 		seen[vote.ValidatorPK] = struct{}{}

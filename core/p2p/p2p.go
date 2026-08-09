@@ -326,7 +326,7 @@ func (n *Node) readTxs(ctx context.Context) {
 		if len(msg.Data) > tx.MaxSerializedBytes {
 			continue
 		}
-		t, err := parseTx(msg.Data)
+		t, err := parseTxForChain(msg.Data, n.cfg.chainID())
 		if err != nil {
 			continue
 		}
@@ -351,7 +351,7 @@ func (n *Node) readBatches(ctx context.Context) {
 			continue
 		}
 		for _, t := range txs {
-			if err := t.VerifySigs(); err != nil {
+			if err := t.VerifySigsForChain(n.cfg.chainID()); err != nil {
 				continue
 			}
 			select {
@@ -400,11 +400,15 @@ func (n *Node) readVotes(ctx context.Context) {
 }
 
 func parseTx(data []byte) (*tx.Tx, error) {
+	return parseTxForChain(data, tx.DefaultChainID)
+}
+
+func parseTxForChain(data []byte, chainID string) (*tx.Tx, error) {
 	t, err := tx.Deserialize(data)
 	if err != nil {
 		return nil, err
 	}
-	if err := t.VerifySigs(); err != nil {
+	if err := t.VerifySigsForChain(chainID); err != nil {
 		return nil, err
 	}
 	return t, nil

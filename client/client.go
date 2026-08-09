@@ -14,15 +14,21 @@ import (
 )
 
 type Client struct {
-	kp     *keys.Keypair
-	q      *queue
-	t      *transport
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex
+	kp      *keys.Keypair
+	q       *queue
+	t       *transport
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	chainID string
 }
 
 func New(addr string, kp *keys.Keypair, queuePath string, opts ...grpc.DialOption) (*Client, error) {
+	return NewWithChainID(addr, kp, queuePath, tx.DefaultChainID, opts...)
+}
+
+// NewWithChainID creates a client that signs transactions for chainID.
+func NewWithChainID(addr string, kp *keys.Keypair, queuePath, chainID string, opts ...grpc.DialOption) (*Client, error) {
 	q, err := openQueue(queuePath, kp)
 	if err != nil {
 		return nil, fmt.Errorf("open queue: %w", err)
@@ -36,11 +42,12 @@ func New(addr string, kp *keys.Keypair, queuePath string, opts ...grpc.DialOptio
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
-		kp:     kp,
-		q:      q,
-		t:      tr,
-		ctx:    ctx,
-		cancel: cancel,
+		kp:      kp,
+		q:       q,
+		t:       tr,
+		ctx:     ctx,
+		cancel:  cancel,
+		chainID: chainID,
 	}
 	go c.reconnectLoop()
 	return c, nil
@@ -49,7 +56,7 @@ func New(addr string, kp *keys.Keypair, queuePath string, opts ...grpc.DialOptio
 func (c *Client) SubmitTx(ctx context.Context, t *tx.Tx) error {
 	t.SenderPubKey = c.kp.PublicKey
 
-	msg, err := t.UnsignedHash()
+	msg, err := t.UnsignedHashForChain(c.chainID)
 	if err != nil {
 		return err
 	}

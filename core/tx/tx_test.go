@@ -83,6 +83,28 @@ func TestDeserializeRejectsTrailingBytes(t *testing.T) {
 	}
 }
 
+func TestTransactionSignatureIsChainBound(t *testing.T) {
+	sender := keys.NewKeypairFromSeed([32]byte{3})
+	receiver := keys.NewKeypairFromSeed([32]byte{4})
+	t1 := &tx.Tx{Type: tx.TxTypeTransfer, Sender: "alice", Receiver: "bob", Value: big.NewInt(1), Nonce: 1, SenderPubKey: sender.PublicKey, ReceiverPubKey: receiver.PublicKey}
+	sig, err := t1.SignSenderForChain(sender, "chain-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1.SenderSig = sig
+	receiverSig, err := t1.SignReceiverForChain(receiver, "chain-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1.ReceiverSig = receiverSig
+	if err := t1.VerifySigsForChain("chain-a"); err != nil {
+		t.Fatalf("same-chain signature rejected: %v", err)
+	}
+	if err := t1.VerifySigsForChain("chain-b"); err == nil {
+		t.Fatal("cross-chain signature should be rejected")
+	}
+}
+
 func TestDeserializeBatchRejectsTrailingBytes(t *testing.T) {
 	t1 := signedTx(t, "alice", "bob", big.NewInt(1), 1)
 	raw, err := tx.SerializeBatch([]*tx.Tx{t1})

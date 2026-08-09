@@ -26,9 +26,10 @@ type nodeQueryAPI interface {
 
 type nodeGRPCServer struct {
 	frgpb.UnimplementedFRGServer
-	node  nodeAPI
-	stat  nodeStatusAPI
-	query nodeQueryAPI
+	node    nodeAPI
+	stat    nodeStatusAPI
+	query   nodeQueryAPI
+	chainID string
 }
 
 func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frgpb.SubmitResponse, error) {
@@ -41,7 +42,7 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 	if err != nil {
 		return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 	}
-	if err := t.VerifySigs(); err != nil {
+	if err := t.VerifySigsForChain(s.chainID); err != nil {
 		return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 	}
 	if err := s.node.BroadcastTx(t); err != nil {
@@ -65,7 +66,7 @@ func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArra
 		if err != nil {
 			return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 		}
-		if err := t.VerifySigs(); err != nil {
+		if err := t.VerifySigsForChain(s.chainID); err != nil {
 			return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 		}
 		batch = append(batch, t)

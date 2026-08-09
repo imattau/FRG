@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/contract"
+	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/node"
@@ -67,6 +67,23 @@ func TestApplyEmptyBlock(t *testing.T) {
 	}
 	if h != 1 {
 		t.Fatalf("want CurrentHeight 1, got %d", h)
+	}
+}
+
+func TestConsensusVoteReservationIsDurable(t *testing.T) {
+	sm, _ := openSM(t)
+	var hash [32]byte
+	hash[0] = 1
+	if !sm.RecordConsensusVote(4, 2, 1, hash) {
+		t.Fatal("first vote reservation should succeed")
+	}
+	if sm.RecordConsensusVote(4, 2, 1, hash) {
+		t.Fatal("duplicate vote reservation should be rejected")
+	}
+	var conflicting [32]byte
+	conflicting[0] = 2
+	if sm.RecordConsensusVote(4, 2, 1, conflicting) {
+		t.Fatal("conflicting vote reservation should be rejected")
 	}
 }
 

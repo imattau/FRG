@@ -35,14 +35,23 @@ type BlockLoop struct {
 	mempool  *mempool
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	chainID  string
 }
 
 func New(kp *keys.Keypair, n *p2p.Node) *BlockLoop {
+	return NewWithChainID(kp, n, tx.DefaultChainID)
+}
+
+func NewWithChainID(kp *keys.Keypair, n *p2p.Node, chainID string) *BlockLoop {
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
 	return &BlockLoop{
 		kp:      kp,
 		p2p:     n,
 		mempool: newMempool(defaultCap),
 		stopCh:  make(chan struct{}),
+		chainID: chainID,
 	}
 }
 
@@ -150,7 +159,7 @@ func (bl *BlockLoop) Propose(height uint64, round uint32, prevAttest consensus.A
 		Txs:              txs,
 		PrevAttestations: prevAttest,
 	}
-	body := consensus.ProposalSignBytes(p)
+	body := consensus.ProposalSignBytesForChain(p, bl.chainID)
 	sig, err := bl.kp.Sign(body)
 	if err != nil {
 		return nil, err

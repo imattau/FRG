@@ -1,0 +1,28 @@
+name: Go CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: |
+          files=$(git diff --name-only "${GITHUB_BASE_SHA:-HEAD^}" HEAD -- '*.go')
+          test -z "$(gofmt -l $files)"
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build node
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" ./cmd/frg-node
