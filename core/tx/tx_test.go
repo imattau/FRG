@@ -71,6 +71,30 @@ func TestTxPayloadSizeLimit(t *testing.T) {
 	}
 }
 
+func TestDeserializeRejectsTrailingBytes(t *testing.T) {
+	t1 := signedTx(t, "alice", "bob", big.NewInt(1), 1)
+	raw, err := t1.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, 0)
+	if _, err := tx.Deserialize(raw); err == nil {
+		t.Fatal("expected trailing bytes to be rejected")
+	}
+}
+
+func TestDeserializeBatchRejectsTrailingBytes(t *testing.T) {
+	t1 := signedTx(t, "alice", "bob", big.NewInt(1), 1)
+	raw, err := tx.SerializeBatch([]*tx.Tx{t1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, 0)
+	if _, err := tx.DeserializeBatch(raw); err == nil {
+		t.Fatal("expected batch trailing bytes to be rejected")
+	}
+}
+
 func signedTx(t *testing.T, sender, receiver string, value *big.Int, nonce uint64) *tx.Tx {
 	t.Helper()
 	senderKP, err := keys.GenerateKeypair()
@@ -160,9 +184,9 @@ func TestTxTypeConstants(t *testing.T) {
 
 func TestTxStructHasMissFields(t *testing.T) {
 	tr := &tx.Tx{
-		Type:           tx.TxTypeMissEvidence,
-		MissedHeight:   42,
-		SkipIndex:      7,
+		Type:         tx.TxTypeMissEvidence,
+		MissedHeight: 42,
+		SkipIndex:    7,
 	}
 	var p [32]byte
 	p[0] = 0xAB
@@ -267,14 +291,14 @@ func TestMissEvidenceVerifySig(t *testing.T) {
 	senderKP, _ := mustKP(t)
 
 	tr := &tx.Tx{
-		Type:           tx.TxTypeMissEvidence,
-		Sender:         "alice",
-		Receiver:       "",
-		Value:          big.NewInt(0),
-		Nonce:          0,
-		SenderPubKey:   senderKP.PublicKey,
-		MissedHeight:   500,
-		SkipIndex:      1,
+		Type:         tx.TxTypeMissEvidence,
+		Sender:       "alice",
+		Receiver:     "",
+		Value:        big.NewInt(0),
+		Nonce:        0,
+		SenderPubKey: senderKP.PublicKey,
+		MissedHeight: 500,
+		SkipIndex:    1,
 	}
 	msg, _ := tr.UnsignedHash()
 	sig, err := senderKP.Sign(msg[:])

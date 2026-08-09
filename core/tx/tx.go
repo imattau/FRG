@@ -13,13 +13,24 @@ import (
 
 const maxTxBytes = 70000
 
+// MaxSerializedBytes is the maximum accepted serialized transaction size.
+const MaxSerializedBytes = maxTxBytes
+
+const (
+	maxBatchTxs   = 1024
+	maxBatchBytes = 8 << 20
+)
+
+// MaxBatchBytes is the maximum accepted serialized transaction batch size.
+const MaxBatchBytes = maxBatchBytes
+
 type TxType uint8
 
 const (
-	TxTypeTransfer        TxType = 1
-	TxTypeMissEvidence    TxType = 2
-	TxTypeContractDeploy  TxType = 3
-	TxTypeContractCall    TxType = 4
+	TxTypeTransfer       TxType = 1
+	TxTypeMissEvidence   TxType = 2
+	TxTypeContractDeploy TxType = 3
+	TxTypeContractCall   TxType = 4
 )
 
 const maxWasmBytes = 1 << 20 // 1 MB
@@ -163,6 +174,9 @@ func (t *Tx) ID() ([32]byte, error) {
 // Layout: [unsigned bytes][SenderPubKey 32][ReceiverPubKey 32][SenderSig 64][ReceiverSig 64]
 // Unsigned layout: [TX_V1\x00 6][Type 1][Len_Sender 2][Sender][Len_Rcvr 2][Receiver][Value 32][Nonce 8][MissedHeight 8][MissedProposer 32][SkipIndex 4]
 func Deserialize(data []byte) (*Tx, error) {
+	if len(data) > maxTxBytes {
+		return nil, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "tx payload %d bytes exceeds %d", len(data), maxTxBytes)
+	}
 	if len(data) < 6+1+2+2+32+8+8+32+4+192 {
 		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "tx too short")
 	}
@@ -265,6 +279,9 @@ func Deserialize(data []byte) (*Tx, error) {
 		copy(callData, data[pos:pos+int(callDataLen)])
 		pos += int(callDataLen)
 	}
+	if pos != len(data)-192 {
+		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "non-canonical tx trailing bytes")
+	}
 
 	// Trailing 192 bytes: SenderPubKey(32) + ReceiverPubKey(32) + SenderSig(64) + ReceiverSig(64)
 	// These are always at the end of the byte slice.
@@ -279,7 +296,7 @@ func Deserialize(data []byte) (*Tx, error) {
 	pos += 64
 	copy(receiverSig[:], data[pos:pos+64])
 
-	return &Tx{
+	parsed := &Tx{
 		Type:           txType,
 		Sender:         sender,
 		Receiver:       receiver,
@@ -294,7 +311,15 @@ func Deserialize(data []byte) (*Tx, error) {
 		SkipIndex:      skipIndex,
 		WasmBytes:      wasmBytes,
 		CallData:       callData,
-	}, nil
+	}
+	canonical, err := parsed.Serialize()
+	if err != nil {
+		return nil, err
+	}
+	if string(canonical) != string(data) {
+		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "tx is not canonical serialization")
+	}
+	return parsed, nil
 }
 
 // VerifySigs verifies Ed25519 signatures against H(Tx_Bytes_unsigned).
@@ -347,8 +372,8 @@ func SerializeBatch(txs []*Tx) ([]byte, error) {
 	if len(txs) == 0 {
 		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "empty batch")
 	}
-	if len(txs) > 0xFFFF {
-		return nil, rgerrors.New(rgerrors.ErrDosSizeExceeded, "too many txs in batch")
+	if len(txs) > maxBatchTxs {
+		return nil, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "too many txs in batch: %d exceeds %d", len(txs), maxBatchTxs)
 	}
 
 	buf := make([]byte, 12+2)
@@ -367,6 +392,9 @@ func SerializeBatch(txs []*Tx) ([]byte, error) {
 		binary.BigEndian.PutUint16(lenBuf, uint16(len(b)))
 		buf = append(buf, lenBuf...)
 		buf = append(buf, b...)
+		if len(buf) > maxBatchBytes {
+			return nil, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "batch exceeds %d bytes", maxBatchBytes)
+		}
 	}
 
 	return buf, nil
@@ -374,6 +402,9 @@ func SerializeBatch(txs []*Tx) ([]byte, error) {
 
 // DeserializeBatch parses a byte slice into multiple transactions.
 func DeserializeBatch(data []byte) ([]*Tx, error) {
+	if len(data) > maxBatchBytes {
+		return nil, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "batch exceeds %d bytes", maxBatchBytes)
+	}
 	if len(data) < 12+2 {
 		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "batch too short")
 	}
@@ -383,6 +414,9 @@ func DeserializeBatch(data []byte) ([]*Tx, error) {
 	}
 
 	count := int(binary.BigEndian.Uint16(data[12:14]))
+	if count > maxBatchTxs {
+		return nil, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "too many txs in batch: %d exceeds %d", count, maxBatchTxs)
+	}
 	pos := 14
 	txs := make([]*Tx, 0, count)
 
@@ -401,6 +435,9 @@ func DeserializeBatch(data []byte) ([]*Tx, error) {
 		}
 		txs = append(txs, t)
 		pos += txLen
+	}
+	if pos != len(data) {
+		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "non-canonical batch trailing bytes")
 	}
 
 	return txs, nil

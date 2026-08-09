@@ -33,6 +33,9 @@ type nodeGRPCServer struct {
 
 func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frgpb.SubmitResponse, error) {
 	_ = ctx
+	if in == nil || len(in.Data) > tx.MaxSerializedBytes {
+		return &frgpb.SubmitResponse{Ok: false, Error: "transaction payload exceeds size limit"}, nil
+	}
 
 	t, err := tx.Deserialize(in.Data)
 	if err != nil {
@@ -49,9 +52,15 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 
 func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArray) (*frgpb.SubmitResponse, error) {
 	_ = ctx
+	if in == nil || len(in.Data) == 0 || len(in.Data) > 1024 {
+		return &frgpb.SubmitResponse{Ok: false, Error: "batch size is invalid"}, nil
+	}
 
 	batch := make([]*tx.Tx, 0, len(in.Data))
 	for _, raw := range in.Data {
+		if len(raw) > tx.MaxSerializedBytes {
+			return &frgpb.SubmitResponse{Ok: false, Error: "transaction payload exceeds size limit"}, nil
+		}
 		t, err := tx.Deserialize(raw)
 		if err != nil {
 			return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil

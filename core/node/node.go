@@ -26,15 +26,28 @@ var (
 
 type RGNode struct {
 	Scale    uint32
-	Volume   *big.Int
-	Variance *big.Int
+	Volume   [32]byte
+	Variance [32]byte
 	Sig      Signature
 	Children [][32]byte
 
-	SumValues     *big.Int
-	SumSquares    *big.Int
+	SumSquares    [32]byte
 	Count         uint64
 	ContractCount uint64
+}
+
+func Uint256ToBytes(v *big.Int) [32]byte {
+	if v == nil {
+		return [32]byte{}
+	}
+	var b [32]byte
+	vb := v.Bytes()
+	copy(b[32-len(vb):], vb)
+	return b
+}
+
+func BytesToUint256(b [32]byte) *big.Int {
+	return new(big.Int).SetBytes(b[:])
 }
 
 func (n *RGNode) Serialize() ([]byte, error) {
@@ -50,10 +63,12 @@ func (n *RGNode) Serialize() ([]byte, error) {
 		return nil, rgerrors.Newf(rgerrors.ErrInvalidChildArity, "expected %d children, got %d", expectedChildren, len(n.Children))
 	}
 
-	if n.Volume == nil || n.Volume.Sign() < 0 || n.Volume.Cmp(hash.UINT256_MAX) > 0 {
+	v := BytesToUint256(n.Volume)
+	if v.Sign() < 0 || v.Cmp(hash.UINT256_MAX) > 0 {
 		return nil, rgerrors.New(rgerrors.ErrArithmeticOverflow, "volume out of uint256 range")
 	}
-	if n.Variance == nil || n.Variance.Sign() < 0 || n.Variance.Cmp(hash.UINT256_MAX) > 0 {
+	vr := BytesToUint256(n.Variance)
+	if vr.Sign() < 0 || vr.Cmp(hash.UINT256_MAX) > 0 {
 		return nil, rgerrors.New(rgerrors.ErrArithmeticOverflow, "variance out of uint256 range")
 	}
 
@@ -66,15 +81,11 @@ func (n *RGNode) Serialize() ([]byte, error) {
 	binary.BigEndian.PutUint32(buf[pos:], n.Scale)
 	pos += 4
 
-	volumeBytes := n.Volume.Bytes()
-	pos += 32 - len(volumeBytes)
-	copy(buf[pos:], volumeBytes)
-	pos += len(volumeBytes)
+	copy(buf[pos:], n.Volume[:])
+	pos += 32
 
-	varianceBytes := n.Variance.Bytes()
-	pos += 32 - len(varianceBytes)
-	copy(buf[pos:], varianceBytes)
-	pos += len(varianceBytes)
+	copy(buf[pos:], n.Variance[:])
+	pos += 32
 
 	buf[pos] = byte(n.Sig)
 	pos++
@@ -113,18 +124,12 @@ func NullNode(scale uint32) (*RGNode, error) {
 
 	if scale == 1 {
 		return &RGNode{
-			Scale:      1,
-			Volume:     big.NewInt(0),
-			Variance:   big.NewInt(0),
-			Sig:        SigNullPad,
-			Children:   [][32]byte{nullPadChildRoot},
-			SumValues:  big.NewInt(0),
-			SumSquares: big.NewInt(0),
-			Count:      0,
+			Scale:    1,
+			Sig:      SigNullPad,
+			Children: [][32]byte{nullPadChildRoot},
 		}, nil
 	}
 
-	// For scale > 1, each child must be the root of NullNode(scale/4).
 	childNull, err := NullNode(scale / 4)
 	if err != nil {
 		return nil, err
@@ -139,22 +144,15 @@ func NullNode(scale uint32) (*RGNode, error) {
 	}
 
 	return &RGNode{
-		Scale:      scale,
-		Volume:     big.NewInt(0),
-		Variance:   big.NewInt(0),
-		Sig:        SigNullPad,
-		Children:   children,
-		SumValues:  big.NewInt(0),
-		SumSquares: big.NewInt(0),
-		Count:      0,
+		Scale:    scale,
+		Sig:      SigNullPad,
+		Children: children,
 	}, nil
 }
 
 func EmptyBlockRoot() [32]byte {
 	node := &RGNode{
 		Scale:    1,
-		Volume:   big.NewInt(0),
-		Variance: big.NewInt(0),
 		Sig:      SigStagnantState,
 		Children: [][32]byte{emptyBlockChildRoot},
 	}
@@ -165,7 +163,6 @@ func EmptyBlockRoot() [32]byte {
 	return root
 }
 
-// DeriveSignature computes the correct signature enum for n from its fields.
 func DeriveSignature(n *RGNode) Signature {
 	return deriveSignature(n)
 }
@@ -186,25 +183,28 @@ func deriveSignature(n *RGNode) Signature {
 		return SigAtomic
 	}
 
+	volume := BytesToUint256(n.Volume)
+	variance := BytesToUint256(n.Variance)
+
 	zero := big.NewInt(0)
-	if n.Volume != nil && n.Volume.Cmp(zero) == 0 && n.Variance != nil && n.Variance.Cmp(zero) == 0 {
+	if volume.Cmp(zero) == 0 && variance.Cmp(zero) == 0 {
 		return SigStagnantState
 	}
 
-	if n.ContractCount == n.Count && n.Count > 0 && n.Volume != nil && n.Volume.Cmp(zero) > 0 {
+	if n.ContractCount == n.Count && n.Count > 0 && volume.Cmp(zero) > 0 {
 		return SigContract
 	}
 
-	if n.Variance != nil && n.Variance.Cmp(zero) == 0 {
+	if variance.Cmp(zero) == 0 {
 		return SigLaminarFlow
 	}
-	// VOLATILE_SHOCK if CV² > 4: variance > 4 * mean²
-	if n.Volume != nil && n.Variance != nil && n.Count > 0 {
+
+	if n.Count > 0 {
 		count := new(big.Int).SetUint64(n.Count)
-		mean := new(big.Int).Div(n.Volume, count)
+		mean := new(big.Int).Div(volume, count)
 		threshold := new(big.Int).Mul(mean, mean)
 		threshold.Mul(threshold, big.NewInt(4))
-		if n.Variance.Cmp(threshold) > 0 {
+		if variance.Cmp(threshold) > 0 {
 			return SigVolatileShock
 		}
 	}
@@ -215,20 +215,18 @@ func isNullPadNode(n *RGNode) bool {
 	if n == nil || len(n.Children) == 0 {
 		return false
 	}
-	if n.Volume == nil || n.Volume.Sign() != 0 {
+	if BytesToUint256(n.Volume).Sign() != 0 {
 		return false
 	}
-	if n.Variance == nil || n.Variance.Sign() != 0 {
+	if BytesToUint256(n.Variance).Sign() != 0 {
 		return false
 	}
 	if n.Count != 0 {
 		return false
 	}
-	// Scale-1 null: single child must be the domain hash sentinel.
 	if n.Scale == 1 {
 		return len(n.Children) == 1 && n.Children[0] == nullPadChildRoot
 	}
-	// Scale>1 null: all 4 children must be roots of NullNode(scale/4).
 	childNull, err := NullNode(n.Scale / 4)
 	if err != nil {
 		return false
@@ -249,5 +247,5 @@ func isEmptyBlockNode(n *RGNode) bool {
 	if n == nil || len(n.Children) != 1 {
 		return false
 	}
-	return n.Children[0] == emptyBlockChildRoot && n.Volume != nil && n.Volume.Sign() == 0 && n.Variance != nil && n.Variance.Sign() == 0
+	return n.Children[0] == emptyBlockChildRoot && BytesToUint256(n.Volume).Sign() == 0 && BytesToUint256(n.Variance).Sign() == 0
 }

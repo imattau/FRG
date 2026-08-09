@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math/big"
 
+	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/gas"
 	"github.com/imattau/frg/core/ledger"
@@ -12,7 +13,6 @@ import (
 	"github.com/imattau/frg/core/staking"
 	"github.com/imattau/frg/core/tree"
 	"github.com/imattau/frg/core/tx"
-	"github.com/imattau/frg/core/contract"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -132,11 +132,23 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 	if err := sm.db.Update(func(btx *bolt.Tx) error {
 		touchedContracts := make(map[[32]byte]struct{})
 
-		// 0. Execute contract deployments and calls, tracking fuel per tx.
+		// 0. Apply transactions in proposer order. All signed transaction
+		// types consume the sender nonce exactly once.
 		for i, t := range b.Txs {
 			switch t.Type {
+			case tx.TxTypeTransfer:
+				if err := sm.ledger.TransferTx(btx, t); err != nil {
+					return err
+				}
 			case tx.TxTypeContractDeploy:
-				_, fuelUsed, err := contract.Deploy(btx, sm.ledger, t, b.Height)
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				gasLimit, err := sm.contractGasLimit(btx, t.SenderPubKey, baseFee)
+				if err != nil {
+					return err
+				}
+				_, fuelUsed, err := contract.Deploy(btx, sm.ledger, t, b.Height, gasLimit)
 				if err != nil {
 					return err
 				}
@@ -144,55 +156,51 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 				addr := contract.ContractAddr(t.SenderPubKey, t.Nonce)
 				touchedContracts[addr] = struct{}{}
 			case tx.TxTypeContractCall:
-				_, fuelUsed, err := contract.Call(btx, sm.ledger, t, b.Height)
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				gasLimit, err := sm.contractGasLimit(btx, t.SenderPubKey, baseFee)
+				if err != nil {
+					return err
+				}
+				_, fuelUsed, err := contract.Call(btx, sm.ledger, t, b.Height, gasLimit)
 				if err != nil {
 					return err
 				}
 				txFuels[i] = fuelUsed
 				touchedContracts[t.ReceiverPubKey] = struct{}{}
-			}
-		}
-
-		// 1. Apply transfers in proposer order.
-		for _, t := range b.Txs {
-			if t.Type == tx.TxTypeTransfer {
-				if err := sm.ledger.TransferTx(btx, t); err != nil {
+			case tx.TxTypeMissEvidence:
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
 					return err
 				}
 			}
 		}
 
-		// 2. Build contract state RG nodes.
+		// 1. Build contract state RG nodes.
 		contractNodes := make([]*node.RGNode, 0, len(touchedContracts))
 		for addr := range touchedContracts {
 			stateRoot := contract.LoadStateRoot(btx, addr)
-			balance, _ := sm.ledger.BalanceOf(addr)
-			bal := big.NewInt(0)
-			if balance != nil {
-				bal = new(big.Int).Set(balance)
-			}
+			bal := sm.ledger.BalanceOfTx(btx, addr)
 			sumSquares := new(big.Int).Mul(bal, bal)
 			contractNodes = append(contractNodes, &node.RGNode{
 				Scale:         1,
-				Volume:        new(big.Int).Set(bal),
-				Variance:      big.NewInt(0),
+				Volume:        node.Uint256ToBytes(new(big.Int).Set(bal)),
 				Sig:           node.SigAtomic,
 				Children:      [][32]byte{stateRoot},
-				SumValues:     new(big.Int).Set(bal),
-				SumSquares:    sumSquares,
+				SumSquares:    node.Uint256ToBytes(sumSquares),
 				Count:         1,
 				ContractCount: 1,
 			})
 		}
 
-		// 3. Build the RG state root from txs + contract state nodes.
+		// 2. Build the RG state root from txs + contract state nodes.
 		root, err := tree.BuildTreeRoot(b.Txs, contractNodes)
 		if err != nil {
 			return err
 		}
 		stateRoot = root
 
-		// 4. Charge gas per tx: base gas (1 unit) + contract compute gas (fuel/FuelUnitsPerGas).
+		// 3. Charge gas per tx: base gas (1 unit) + contract compute gas (fuel/FuelUnitsPerGas).
 		//    gas_price = baseFee. fee = gas_used * baseFee.
 		for i, t := range b.Txs {
 			if baseFee.Sign() == 0 {
@@ -209,7 +217,7 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 			totalGas += gasUnits
 		}
 
-		// 5. Apply miss-evidence side effects.
+		// 4. Apply miss-evidence side effects.
 		for _, t := range b.Txs {
 			if t.Type == tx.TxTypeMissEvidence {
 				_, slashAmt, err := sm.staking.RecordMissTx(btx, t.MissedProposer)
@@ -225,14 +233,14 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 			}
 		}
 
-		// 6. Mint block reward to proposer.
+		// 5. Mint block reward to proposer.
 		if mintAmount.Sign() > 0 {
 			if err := sm.ledger.CreditTx(btx, b.ProposerPubKey, mintAmount); err != nil {
 				return err
 			}
 		}
 
-		// 7. Persist meta. Base fee adjusts on total gas consumed, not tx count.
+		// 6. Persist meta. Base fee adjusts on total gas consumed, not tx count.
 		mb := btx.Bucket(metaBucket)
 		heightBuf := make([]byte, 8)
 		binary.BigEndian.PutUint64(heightBuf, b.Height)
@@ -277,6 +285,21 @@ func (sm *StateMachine) currentBaseFee() (*big.Int, error) {
 		return nil
 	})
 	return fee, err
+}
+
+func (sm *StateMachine) contractGasLimit(btx *bolt.Tx, sender [32]byte, baseFee *big.Int) (uint64, error) {
+	if baseFee == nil || baseFee.Sign() <= 0 {
+		return 0, nil
+	}
+	bal := sm.ledger.BalanceOfTx(btx, sender)
+	affordableGas := new(big.Int).Div(bal, baseFee)
+	if affordableGas.Cmp(big.NewInt(1)) <= 0 {
+		return 0, rgerrors.New(rgerrors.ErrInsufficientFunds, "sender cannot afford contract gas")
+	}
+	if !affordableGas.IsUint64() {
+		return ^uint64(0), nil
+	}
+	return affordableGas.Uint64() - 1, nil
 }
 
 func (sm *StateMachine) supplyAndStaked() (*big.Int, *big.Int, error) {

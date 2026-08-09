@@ -60,8 +60,7 @@ func BenchmarkTxSerialise(b *testing.B) {
 func BenchmarkNodeSerialise(b *testing.B) {
 	n := &node.RGNode{
 		Scale:    1,
-		Volume:   big.NewInt(100),
-		Variance: big.NewInt(0),
+		Volume:   node.Uint256ToBytes(big.NewInt(100)),
 		Sig:      node.SigAtomic,
 		Children: [][32]byte{hash.Hash([]byte("test"))},
 	}

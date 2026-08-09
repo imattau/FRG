@@ -52,8 +52,7 @@ func TestEmptyBlockRoot(t *testing.T) {
 func TestRecomputeSigAtomic(t *testing.T) {
 	n := &node.RGNode{
 		Scale:    1,
-		Volume:   big.NewInt(1),
-		Variance: big.NewInt(0),
+		Volume:   node.Uint256ToBytes(big.NewInt(1)),
 		Sig:      node.SigAtomic,
 		Children: [][32]byte{{}},
 	}
@@ -71,8 +70,6 @@ func TestNodeSerializeRoundtrip(t *testing.T) {
 	copy(child[:], make([]byte, 32))
 	n := &node.RGNode{
 		Scale:    1,
-		Volume:   big.NewInt(0),
-		Variance: big.NewInt(0),
 		Sig:      node.SigStagnantState,
 		Children: [][32]byte{child},
 	}

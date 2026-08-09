@@ -228,9 +228,14 @@ func (e *Engine) Stop() {
 }
 
 func (e *Engine) prevStateRoot() [32]byte {
-	// In a full implementation, retrieve from state machine.
-	// Returns zero value for height 1 (genesis predecessor).
-	return [32]byte{}
+	if e.sm == nil {
+		return [32]byte{}
+	}
+	root, err := e.sm.CurrentStateRoot()
+	if err != nil {
+		return [32]byte{}
+	}
+	return root
 }
 
 func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
@@ -307,6 +312,15 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
 	}
 	if rs.Phase != PhasePropose || rs.Proposal != nil {
 		return
+	}
+	expected, err := leader.SkipProposer(e.prevStateRoot(), rs.Height, validators, rs.Round)
+	if err != nil || p.ProposerPK != expected {
+		return
+	}
+	for _, t := range p.Txs {
+		if err := t.VerifySigs(); err != nil {
+			return
+		}
 	}
 	rs.Proposal = p
 	rs.Phase = PhasePrevote

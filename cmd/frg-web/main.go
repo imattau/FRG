@@ -9,7 +9,9 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,8 @@ const (
 	defaultDBPath     = "explorer.db"
 	requestTimeout    = 15 * time.Second
 	maxBlockHistory   = 1000
+	maxWebRequestBody = 8 << 20
+	maxWebBatchItems  = 1024
 )
 
 var pageTemplate = template.Must(template.New("page").Parse(`
@@ -484,6 +488,8 @@ func main() {
 		Addr:              *listenAddr,
 		Handler:           logRequests(mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       20 * time.Second,
+		WriteTimeout:      30 * time.Second,
 	}
 
 	log.Printf("FRG web client listening on http://%s", *listenAddr)
@@ -508,7 +514,12 @@ func (s *server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebRequestBody)
 	defer r.Body.Close()
 
 	var req submitTxRequest
@@ -534,12 +545,21 @@ func (s *server) handleSubmitBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebRequestBody)
 	defer r.Body.Close()
 
 	var req submitBatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	if len(req.TxHexes) > maxWebBatchItems {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "batch item limit exceeded"})
 		return
 	}
 	rawBatch := make([][]byte, 0, len(req.TxHexes))
@@ -564,7 +584,11 @@ func (s *server) handleBlocks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -649,7 +673,11 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	conn, err := s.dial(r.Context(), addr)
 	if err != nil {
@@ -681,7 +709,11 @@ func (s *server) handleValidators(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	conn, err := s.dial(r.Context(), addr)
 	if err != nil {
@@ -716,7 +748,11 @@ func (s *server) handleMempool(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	conn, err := s.dial(r.Context(), addr)
 	if err != nil {
@@ -753,7 +789,11 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	addr := addrFromRequest(r, s.defaultAddr)
+	addr, err := addrFromRequest(r, s.defaultAddr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	pubkeyHex := strings.TrimSpace(r.URL.Query().Get("pubkey"))
 	if pubkeyHex == "" {
 		http.Error(w, "missing pubkey query param", http.StatusBadRequest)
@@ -891,11 +931,35 @@ func dialGRPC(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	)
 }
 
-func addrFromRequest(r *http.Request, fallback string) string {
+func addrFromRequest(r *http.Request, fallback string) (string, error) {
 	if v := strings.TrimSpace(r.URL.Query().Get("addr")); v != "" {
-		return v
+		if err := validateLoopbackAddr(v); err != nil {
+			return "", err
+		}
+		return v, nil
 	}
-	return fallback
+	if err := validateLoopbackAddr(fallback); err != nil {
+		return "", err
+	}
+	return fallback, nil
+}
+
+func validateLoopbackAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("gRPC address must be loopback host:port")
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return fmt.Errorf("gRPC address port is invalid")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("gRPC address must be loopback")
+	}
+	return nil
 }
 
 func decodeHexBytes(s string) ([]byte, error) {

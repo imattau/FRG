@@ -73,10 +73,10 @@ func TestHandleSubmitTx(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := &server{defaultAddr: "bufconn", dial: dial}
+	app := &server{defaultAddr: "127.0.0.1:50051", dial: dial}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/submit-tx", app.handleSubmitTx)
-	req := httptest.NewRequest(http.MethodPost, "/api/submit-tx?addr=bufconn", strings.NewReader(`{"tx_hex":"`+hex.EncodeToString(raw)+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/submit-tx", strings.NewReader(`{"tx_hex":"`+hex.EncodeToString(raw)+`"}`))
 	rec := httptest.NewRecorder()
 
 	mux.ServeHTTP(rec, req)
@@ -113,10 +113,10 @@ func TestHandleSubmitBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := &server{defaultAddr: "bufconn", dial: dial}
+	app := &server{defaultAddr: "127.0.0.1:50051", dial: dial}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/submit-batch", app.handleSubmitBatch)
-	req := httptest.NewRequest(http.MethodPost, "/api/submit-batch?addr=bufconn", strings.NewReader(`{"tx_hexes":["`+hex.EncodeToString(raw1)+`","`+hex.EncodeToString(raw2)+`"]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/submit-batch", strings.NewReader(`{"tx_hexes":["`+hex.EncodeToString(raw1)+`","`+hex.EncodeToString(raw2)+`"]}`))
 	rec := httptest.NewRecorder()
 
 	mux.ServeHTTP(rec, req)
@@ -140,11 +140,11 @@ func TestHandleSubmitBatch(t *testing.T) {
 func TestHandleBlocks(t *testing.T) {
 	_, dial, srv := startWebTestGRPC(t)
 	srv.blockCh <- []byte("block-header")
-	app := &server{defaultAddr: "bufconn", dial: dial}
+	app := &server{defaultAddr: "127.0.0.1:50051", dial: dial}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/blocks", app.handleBlocks)
-	req := httptest.NewRequest(http.MethodGet, "/api/blocks?addr=bufconn", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/blocks", nil)
 	rec := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -177,10 +177,10 @@ func TestHandleStatus(t *testing.T) {
 		GrpcOnly:       true,
 	}
 
-	app := &server{defaultAddr: "bufconn", dial: dial}
+	app := &server{defaultAddr: "127.0.0.1:50051", dial: dial}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", app.handleStatus)
-	req := httptest.NewRequest(http.MethodGet, "/api/status?addr=bufconn", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	rec := httptest.NewRecorder()
 
 	mux.ServeHTTP(rec, req)
@@ -193,6 +193,19 @@ func TestHandleStatus(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"state_root_hex":"deadbeef"`) {
 		t.Fatalf("unexpected response body: %s", rec.Body.String())
+	}
+}
+
+func TestHandlersRejectNonLoopbackGRPCAddress(t *testing.T) {
+	app := &server{defaultAddr: "127.0.0.1:50051", dial: func(context.Context, string) (*grpc.ClientConn, error) {
+		t.Fatal("dial must not be called for a non-loopback address")
+		return nil, nil
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/status?addr=10.0.0.1:50051", nil)
+	rec := httptest.NewRecorder()
+	app.handleStatus(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 

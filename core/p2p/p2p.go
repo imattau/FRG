@@ -19,11 +19,14 @@ import (
 )
 
 const (
-	topicTxSuffix    = "/tx/v1"
-	topicBatchSuffix = "/batch/v1"
-	topicBlockSuffix = "/block/v1"
-	topicVoteSuffix  = "/vote/v1"
-	defaultChainID   = "frg-mainnet-1"
+	topicTxSuffix       = "/tx/v1"
+	topicBatchSuffix    = "/batch/v1"
+	topicBlockSuffix    = "/block/v1"
+	topicVoteSuffix     = "/vote/v1"
+	defaultChainID      = "frg-mainnet-1"
+	maxGossipBatchBytes = tx.MaxBatchBytes
+	maxGossipBlockBytes = 1 << 20
+	maxGossipVoteBytes  = 141
 )
 
 // Config holds node configuration.
@@ -205,15 +208,31 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 
 // Close shuts down the node gracefully.
 func (n *Node) Close() error {
-	n.cancel()
-	n.txSub.Cancel()
-	n.batchSub.Cancel()
-	n.blockSub.Cancel()
-	n.voteSub.Cancel()
-	if n.dht != nil {
-		n.dht.Close()
+	if n == nil {
+		return nil
 	}
-	return n.host.Close()
+	if n.cancel != nil {
+		n.cancel()
+	}
+	if n.txSub != nil {
+		n.txSub.Cancel()
+	}
+	if n.batchSub != nil {
+		n.batchSub.Cancel()
+	}
+	if n.blockSub != nil {
+		n.blockSub.Cancel()
+	}
+	if n.voteSub != nil {
+		n.voteSub.Cancel()
+	}
+	if n.dht != nil {
+		_ = n.dht.Close()
+	}
+	if n.host != nil {
+		return n.host.Close()
+	}
+	return nil
 }
 
 // BroadcastTx gossips a transaction to all peers on frg/tx/v1.
@@ -236,6 +255,9 @@ func (n *Node) BroadcastBatch(txs []*tx.Tx) error {
 
 // BroadcastBlockHeader gossips a serialised block header or proposal on frg/block/v1.
 func (n *Node) BroadcastBlockHeader(header []byte) error {
+	if len(header) > maxGossipBlockBytes {
+		return fmt.Errorf("block header exceeds %d bytes", maxGossipBlockBytes)
+	}
 	return n.blockTopic.Publish(context.Background(), header)
 }
 
@@ -261,11 +283,17 @@ func (n *Node) SubscribeVotes() <-chan []byte {
 
 // PeerCount returns the number of currently connected peers.
 func (n *Node) PeerCount() int {
+	if n == nil || n.host == nil {
+		return 0
+	}
 	return len(n.host.Network().Peers())
 }
 
 // Addrs returns the multiaddrs of the node with peer ID.
 func (n *Node) Addrs() []multiaddr.Multiaddr {
+	if n == nil || n.host == nil {
+		return nil
+	}
 	peerID := n.host.ID().String()
 	addrs := n.host.Addrs()
 	out := make([]multiaddr.Multiaddr, len(addrs))
@@ -295,6 +323,9 @@ func (n *Node) readTxs(ctx context.Context) {
 		if err != nil {
 			return
 		}
+		if len(msg.Data) > tx.MaxSerializedBytes {
+			continue
+		}
 		t, err := parseTx(msg.Data)
 		if err != nil {
 			continue
@@ -311,6 +342,9 @@ func (n *Node) readBatches(ctx context.Context) {
 		msg, err := n.batchSub.Next(ctx)
 		if err != nil {
 			return
+		}
+		if len(msg.Data) > maxGossipBatchBytes {
+			continue
 		}
 		txs, err := tx.DeserializeBatch(msg.Data)
 		if err != nil {
@@ -334,6 +368,9 @@ func (n *Node) readBlocks(ctx context.Context) {
 		if err != nil {
 			return
 		}
+		if len(msg.Data) > maxGossipBlockBytes {
+			continue
+		}
 		data := make([]byte, len(msg.Data))
 		copy(data, msg.Data)
 		select {
@@ -350,10 +387,10 @@ func (n *Node) readVotes(ctx context.Context) {
 			return
 		}
 		// Votes are 141 bytes fixed-width
-		if len(msg.Data) != 141 {
+		if len(msg.Data) != maxGossipVoteBytes {
 			continue
 		}
-		vote := make([]byte, 141)
+		vote := make([]byte, maxGossipVoteBytes)
 		copy(vote, msg.Data)
 		select {
 		case n.voteCh <- vote:

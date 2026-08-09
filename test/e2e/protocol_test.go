@@ -93,8 +93,7 @@ func TestTxSerialisation(t *testing.T) {
 func TestNodeSerialisation(t *testing.T) {
 	n := &node.RGNode{
 		Scale:    1,
-		Volume:   big.NewInt(100),
-		Variance: big.NewInt(0),
+		Volume:   node.Uint256ToBytes(big.NewInt(100)),
 		Sig:      node.SigAtomic,
 		Children: [][32]byte{hash.Hash([]byte("test"))},
 	}
@@ -116,8 +115,7 @@ func TestNodeSerialisation(t *testing.T) {
 func TestSignatureRecomputation(t *testing.T) {
 	n := &node.RGNode{
 		Scale:    4,
-		Volume:   big.NewInt(500),
-		Variance: big.NewInt(0),
+		Volume:   node.Uint256ToBytes(big.NewInt(500)),
 		Sig:      node.SigVolatileShock, // wrong — will fail recompute
 		Children: make([][32]byte, 4),
 	}

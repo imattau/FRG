@@ -37,9 +37,9 @@ const (
 	defaultGenesisPath    = "genesis.json"
 	defaultListenAddr     = "/ip4/127.0.0.1/tcp/7777"
 	defaultGRPCListenAddr = "127.0.0.1:50051"
-defaultTimeoutMS      = 3000
-defaultProposeDelayMS = 500
-defaultGenesisBond    = "1000"
+	defaultTimeoutMS      = 3000
+	defaultProposeDelayMS = 500
+	defaultGenesisBond    = "1000"
 	defaultGenesisBalance = "10000"
 	defaultChainID        = "frg-mainnet-1"
 )
@@ -69,9 +69,9 @@ type GRPCConfig struct {
 }
 
 type ConsensusConfig struct {
-	ProposeDelayMS    int `toml:"propose_delay_ms"`
-	ProposeTimeoutMS  int `toml:"propose_timeout_ms"`
-	PrevoteTimeoutMS  int `toml:"prevote_timeout_ms"`
+	ProposeDelayMS     int `toml:"propose_delay_ms"`
+	ProposeTimeoutMS   int `toml:"propose_timeout_ms"`
+	PrevoteTimeoutMS   int `toml:"prevote_timeout_ms"`
 	PrecommitTimeoutMS int `toml:"precommit_timeout_ms"`
 }
 
@@ -224,9 +224,9 @@ func defaultConfig() Config {
 			Listen: defaultGRPCListenAddr,
 		},
 		Consensus: ConsensusConfig{
-			ProposeDelayMS:    defaultProposeDelayMS,
-			ProposeTimeoutMS:  defaultTimeoutMS,
-			PrevoteTimeoutMS:  defaultTimeoutMS,
+			ProposeDelayMS:     defaultProposeDelayMS,
+			ProposeTimeoutMS:   defaultTimeoutMS,
+			PrevoteTimeoutMS:   defaultTimeoutMS,
 			PrecommitTimeoutMS: defaultTimeoutMS,
 		},
 	}
@@ -355,7 +355,7 @@ func startGRPCServer(listenAddr string, node nodeRuntimeAPI) (*grpc.Server, stri
 		return nil, "", fmt.Errorf("listen %s: %w", listenAddr, err)
 	}
 
-	server := grpc.NewServer()
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(8 << 20))
 	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node})
 
 	go func() {

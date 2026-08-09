@@ -131,7 +131,7 @@ func TestContractDeployAndCall(t *testing.T) {
 	var stateRoot [32]byte
 	if err := db.Update(func(btx *bolt.Tx) error {
 		var err error
-		stateRoot, _, err = contract.Deploy(btx, l, deployTx, 1)
+		stateRoot, _, err = contract.Deploy(btx, l, deployTx, 1, 1000000)
 		return err
 	}); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -167,7 +167,7 @@ func TestContractDeployAndCall(t *testing.T) {
 	var callRoot [32]byte
 	if err := db.Update(func(btx *bolt.Tx) error {
 		var err error
-		callRoot, _, err = contract.Call(btx, l, callTx, 2)
+		callRoot, _, err = contract.Call(btx, l, callTx, 2, 1000000)
 		return err
 	}); err != nil {
 		t.Fatalf("call: %v", err)
@@ -234,7 +234,7 @@ func TestContractStatePersistence(t *testing.T) {
 	var deployRoot [32]byte
 	if err := db.Update(func(btx *bolt.Tx) error {
 		var err error
-		deployRoot, _, err = contract.Deploy(btx, l, deployTx, 1)
+		deployRoot, _, err = contract.Deploy(btx, l, deployTx, 1, 1000000)
 		return err
 	}); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -265,7 +265,7 @@ func TestContractStatePersistence(t *testing.T) {
 	callTx.SenderSig = sig2
 
 	if err := db.Update(func(btx *bolt.Tx) error {
-		_, _, err := contract.Call(btx, l, callTx, 2)
+		_, _, err := contract.Call(btx, l, callTx, 2, 1000000)
 		return err
 	}); err != nil {
 		t.Fatalf("call: %v", err)

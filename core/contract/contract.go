@@ -24,7 +24,7 @@ func ContractAddr(deployerPubKey [32]byte, nonce uint64) [32]byte {
 	return hash.Hash(state)
 }
 
-func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byte, uint64, error) {
+func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit uint64) ([32]byte, uint64, error) {
 	contractAddr := ContractAddr(t.SenderPubKey, t.Nonce)
 
 	if len(t.WasmBytes) == 0 {
@@ -52,6 +52,7 @@ func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]b
 		State:       state,
 		Ledger:      l,
 		BoltTx:      btx,
+		GasLimit:    gasLimit,
 	}
 	rt, err := NewRuntime(cfg)
 	if err != nil {
@@ -71,7 +72,7 @@ func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]b
 	return state.StateRoot(), rt.FuelConsumed(), nil
 }
 
-func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byte, uint64, error) {
+func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit uint64) ([32]byte, uint64, error) {
 	contractAddr := t.ReceiverPubKey
 
 	wasmBytes, err := loadBytecode(btx, contractAddr)
@@ -96,6 +97,7 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byt
 		State:       state,
 		Ledger:      l,
 		BoltTx:      btx,
+		GasLimit:    gasLimit,
 	}
 	rt, err := NewRuntime(cfg)
 	if err != nil {

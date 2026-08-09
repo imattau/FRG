@@ -19,6 +19,7 @@ type Runtime struct {
 	linker      *wasmtime.Linker
 	instance    *wasmtime.Instance
 	initialFuel uint64
+	hostErr     error
 }
 
 type RuntimeConfig struct {
@@ -37,7 +38,14 @@ func NewRuntime(cfg *RuntimeConfig) (*Runtime, error) {
 	engine := wasmtime.NewEngine()
 	store := wasmtime.NewStore(engine)
 
-	fuelCap := cfg.GasLimit * FuelUnitsPerGas
+	var fuelCap uint64 = maxFuel
+	if cfg.GasLimit != 0 {
+		if cfg.GasLimit > ^uint64(0)/FuelUnitsPerGas {
+			fuelCap = ^uint64(0)
+		} else {
+			fuelCap = cfg.GasLimit * FuelUnitsPerGas
+		}
+	}
 	if fuelCap == 0 {
 		fuelCap = maxFuel
 	}
@@ -100,17 +108,21 @@ func (r *Runtime) defineHostFunctions(cfg *RuntimeConfig) {
 		return writeMem(mem, caller, outPtr, outLen, val)
 	})
 
-	r.linker.FuncWrap("frg", "state_set", func(caller *wasmtime.Caller, keyPtr int32, keyLen int32, valPtr int32, valLen int32) {
+	r.linker.FuncWrap("frg", "state_set", func(caller *wasmtime.Caller, keyPtr int32, keyLen int32, valPtr int32, valLen int32) int32 {
 		mem := mustMem(caller)
 		key, ok := readMem(mem, caller, keyPtr, keyLen)
 		if !ok {
-			return
+			return 1
 		}
 		val, ok := readMem(mem, caller, valPtr, valLen)
 		if !ok {
-			return
+			return 1
 		}
-		cfg.State.Set(key, val)
+		if err := cfg.State.Set(key, val); err != nil {
+			r.hostErr = err
+			return 1
+		}
+		return 0
 	})
 
 	r.linker.FuncWrap("frg", "self_balance", func(caller *wasmtime.Caller, outPtr int32) {
@@ -233,6 +245,9 @@ func (r *Runtime) Call(functionName string) ([]byte, error) {
 	_, err := run.Call(r.store)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractTrap, ""), err)
+	}
+	if r.hostErr != nil {
+		return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractStateInvalid, ""), r.hostErr)
 	}
 
 	return nil, nil

@@ -58,15 +58,15 @@ func (l *Ledger) Close() error {
 func (l *Ledger) BalanceOf(account [32]byte) (*big.Int, error) {
 	var bal *big.Int
 	err := l.db.View(func(btx *bolt.Tx) error {
-		v := btx.Bucket(balancesBucket).Get(account[:])
-		if v == nil {
-			bal = big.NewInt(0)
-			return nil
-		}
-		bal = new(big.Int).SetBytes(v)
+		bal = l.BalanceOfTx(btx, account)
 		return nil
 	})
 	return bal, err
+}
+
+// BalanceOfTx returns the balance for account inside an existing transaction.
+func (l *Ledger) BalanceOfTx(btx *bolt.Tx, account [32]byte) *big.Int {
+	return readBalance(btx.Bucket(balancesBucket), account)
 }
 
 // NonceOf returns the last accepted nonce for account.
@@ -102,15 +102,8 @@ func (l *Ledger) Transfer(t *tx.Tx) error {
 // TransferTx applies a transaction within an existing bolt transaction.
 // Caller is responsible for signature verification.
 func (l *Ledger) TransferTx(btx *bolt.Tx, t *tx.Tx) error {
-	nb := btx.Bucket(noncesBucket)
-	var storedNonce uint64
-	v := nb.Get(t.SenderPubKey[:])
-	if v != nil {
-		storedNonce = binary.BigEndian.Uint64(v)
-	}
-
-	if t.Nonce != storedNonce+1 {
-		return rgerrors.Newf(rgerrors.ErrSequenceFault, "expected nonce %d, got %d", storedNonce+1, t.Nonce)
+	if err := l.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+		return err
 	}
 
 	bb := btx.Bucket(balancesBucket)
@@ -129,9 +122,24 @@ func (l *Ledger) TransferTx(btx *bolt.Tx, t *tx.Tx) error {
 		return err
 	}
 
+	return nil
+}
+
+// AdvanceNonceTx enforces and records the next sequential nonce for account
+// within an existing Bolt transaction.
+func (l *Ledger) AdvanceNonceTx(btx *bolt.Tx, account [32]byte, nonce uint64) error {
+	nb := btx.Bucket(noncesBucket)
+	var storedNonce uint64
+	v := nb.Get(account[:])
+	if v != nil {
+		storedNonce = binary.BigEndian.Uint64(v)
+	}
+	if nonce != storedNonce+1 {
+		return rgerrors.Newf(rgerrors.ErrSequenceFault, "expected nonce %d, got %d", storedNonce+1, nonce)
+	}
 	nonceBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(nonceBuf, t.Nonce)
-	return nb.Put(t.SenderPubKey[:], nonceBuf)
+	binary.BigEndian.PutUint64(nonceBuf, nonce)
+	return nb.Put(account[:], nonceBuf)
 }
 
 // Burn destroys amount quanta from account's balance.

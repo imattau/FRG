@@ -2,6 +2,7 @@ package contract
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sort"
 
 	"github.com/imattau/frg/core/hash"
@@ -20,18 +21,28 @@ func NewStateStore() *StateStore {
 
 func (s *StateStore) Get(key []byte) ([]byte, bool) {
 	v, ok := s.data[string(key)]
-	return v, ok
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), v...), true
 }
 
-func (s *StateStore) Set(key, value []byte) {
+func (s *StateStore) Set(key, value []byte) error {
+	if len(key) == 0 || len(key) > maxStateKeyLen {
+		return fmt.Errorf("contract state key length %d exceeds bounds [1,%d]", len(key), maxStateKeyLen)
+	}
+	if len(value) > maxStateValLen {
+		return fmt.Errorf("contract state value length %d exceeds max %d", len(value), maxStateValLen)
+	}
 	k := string(key)
 	if len(value) == 0 {
 		delete(s.data, k)
-		return
+		return nil
 	}
 	cp := make([]byte, len(value))
 	copy(cp, value)
 	s.data[k] = cp
+	return nil
 }
 
 func (s *StateStore) Delete(key []byte) {
@@ -66,7 +77,8 @@ func (s *StateStore) StateRoot() [32]byte {
 }
 
 // Serialize encodes the state store as a binary blob:
-//   [key_count uint16] [key_len uint8] [key_bytes] [val_len uint16] [val_bytes]...
+//
+//	[key_count uint16] [key_len uint8] [key_bytes] [val_len uint16] [val_bytes]...
 func (s *StateStore) Serialize() []byte {
 	keys := make([]string, 0, len(s.data))
 	for k := range s.data {
@@ -76,6 +88,12 @@ func (s *StateStore) Serialize() []byte {
 
 	size := 2 // key_count
 	for _, k := range keys {
+		if len(k) == 0 || len(k) > maxStateKeyLen {
+			return nil
+		}
+		if len(s.data[k]) > maxStateValLen {
+			return nil
+		}
 		size += 1 + len(k) + 2 + len(s.data[k])
 	}
 	buf := make([]byte, size)
@@ -110,6 +128,9 @@ func DeserializeState(raw []byte) *StateStore {
 		}
 		keyLen := int(raw[pos])
 		pos++
+		if keyLen == 0 || keyLen > maxStateKeyLen {
+			break
+		}
 		if pos+keyLen > len(raw) {
 			break
 		}
