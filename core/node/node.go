@@ -16,6 +16,7 @@ const (
 	SigStagnantState Signature = 3
 	SigLaminarFlow   Signature = 4
 	SigVolatileShock Signature = 5
+	SigContract      Signature = 6
 )
 
 var (
@@ -30,9 +31,10 @@ type RGNode struct {
 	Sig      Signature
 	Children [][32]byte
 
-	SumValues  *big.Int
-	SumSquares *big.Int
-	Count      uint64
+	SumValues     *big.Int
+	SumSquares    *big.Int
+	Count         uint64
+	ContractCount uint64
 }
 
 func (n *RGNode) Serialize() ([]byte, error) {
@@ -188,11 +190,15 @@ func deriveSignature(n *RGNode) Signature {
 	if n.Volume != nil && n.Volume.Cmp(zero) == 0 && n.Variance != nil && n.Variance.Cmp(zero) == 0 {
 		return SigStagnantState
 	}
+
+	if n.ContractCount == n.Count && n.Count > 0 && n.Volume != nil && n.Volume.Cmp(zero) > 0 {
+		return SigContract
+	}
+
 	if n.Variance != nil && n.Variance.Cmp(zero) == 0 {
 		return SigLaminarFlow
 	}
 	// VOLATILE_SHOCK if CV² > 4: variance > 4 * mean²
-	// mean = volume / count (floor); threshold = 4 * mean²
 	if n.Volume != nil && n.Variance != nil && n.Count > 0 {
 		count := new(big.Int).SetUint64(n.Count)
 		mean := new(big.Int).Div(n.Volume, count)

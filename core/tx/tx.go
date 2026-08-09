@@ -16,9 +16,13 @@ const maxTxBytes = 70000
 type TxType uint8
 
 const (
-	TxTypeTransfer     TxType = 1
-	TxTypeMissEvidence TxType = 2
+	TxTypeTransfer        TxType = 1
+	TxTypeMissEvidence    TxType = 2
+	TxTypeContractDeploy  TxType = 3
+	TxTypeContractCall    TxType = 4
 )
+
+const maxWasmBytes = 1 << 20 // 1 MB
 
 type Tx struct {
 	Type           TxType
@@ -34,6 +38,12 @@ type Tx struct {
 	MissedHeight   uint64
 	MissedProposer [32]byte
 	SkipIndex      uint32
+	// CONTRACT_DEPLOY: WASM bytecode
+	WasmBytes []byte
+	// CONTRACT_DEPLOY: constructor arguments
+	InitArgs []byte
+	// CONTRACT_CALL: function call data
+	CallData []byte
 }
 
 func (t *Tx) serializeUnsigned() ([]byte, error) {
@@ -89,6 +99,25 @@ func (t *Tx) serializeUnsigned() ([]byte, error) {
 	pos += 32
 
 	binary.BigEndian.PutUint32(buf[pos:], t.SkipIndex)
+
+	switch t.Type {
+	case TxTypeContractDeploy:
+		if len(t.WasmBytes) > maxWasmBytes {
+			return nil, rgerrors.Newf(rgerrors.ErrContractBytecodeTooLarge, "wasm %d bytes exceeds %d", len(t.WasmBytes), maxWasmBytes)
+		}
+		ext := make([]byte, 4+len(t.WasmBytes))
+		binary.BigEndian.PutUint32(ext, uint32(len(t.WasmBytes)))
+		copy(ext[4:], t.WasmBytes)
+		buf = append(buf, ext...)
+	case TxTypeContractCall:
+		if len(t.CallData) > 0xFFFF {
+			return nil, rgerrors.New(rgerrors.ErrDosSizeExceeded, "calldata exceeds uint16")
+		}
+		ext := make([]byte, 2+len(t.CallData))
+		binary.BigEndian.PutUint16(ext, uint16(len(t.CallData)))
+		copy(ext[2:], t.CallData)
+		buf = append(buf, ext...)
+	}
 
 	return buf, nil
 }
@@ -204,6 +233,39 @@ func Deserialize(data []byte) (*Tx, error) {
 	skipIndex := binary.BigEndian.Uint32(data[pos:])
 	pos += 4
 
+	// Contract-specific extensions
+	var wasmBytes []byte
+	var callData []byte
+	switch txType {
+	case TxTypeContractDeploy:
+		if pos+4 > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "wasmlen truncated")
+		}
+		wasmLen := binary.BigEndian.Uint32(data[pos:])
+		pos += 4
+		if int(wasmLen) > maxWasmBytes {
+			return nil, rgerrors.Newf(rgerrors.ErrContractBytecodeTooLarge, "wasm %d bytes exceeds %d", wasmLen, maxWasmBytes)
+		}
+		if pos+int(wasmLen) > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "wasm bytes truncated")
+		}
+		wasmBytes = make([]byte, wasmLen)
+		copy(wasmBytes, data[pos:pos+int(wasmLen)])
+		pos += int(wasmLen)
+	case TxTypeContractCall:
+		if pos+2 > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "calldata len truncated")
+		}
+		callDataLen := binary.BigEndian.Uint16(data[pos:])
+		pos += 2
+		if pos+int(callDataLen) > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "calldata truncated")
+		}
+		callData = make([]byte, callDataLen)
+		copy(callData, data[pos:pos+int(callDataLen)])
+		pos += int(callDataLen)
+	}
+
 	// Trailing 192 bytes: SenderPubKey(32) + ReceiverPubKey(32) + SenderSig(64) + ReceiverSig(64)
 	// These are always at the end of the byte slice.
 	pos = len(data) - 192
@@ -230,12 +292,15 @@ func Deserialize(data []byte) (*Tx, error) {
 		MissedHeight:   missedHeight,
 		MissedProposer: missedProposer,
 		SkipIndex:      skipIndex,
+		WasmBytes:      wasmBytes,
+		CallData:       callData,
 	}, nil
 }
 
 // VerifySigs verifies Ed25519 signatures against H(Tx_Bytes_unsigned).
 // TRANSFER: verifies both SenderSig and ReceiverSig.
 // MISS_EVIDENCE: verifies only SenderSig.
+// CONTRACT_DEPLOY / CONTRACT_CALL: verifies only SenderSig (single-sig).
 func (t *Tx) VerifySigs() error {
 	msg, err := t.UnsignedHash()
 	if err != nil {
@@ -250,7 +315,7 @@ func (t *Tx) VerifySigs() error {
 		if !keys.Verify(t.ReceiverPubKey, msg[:], t.ReceiverSig) {
 			return rgerrors.New(rgerrors.ErrInvalidSignature, "receiver signature verification failed")
 		}
-	case TxTypeMissEvidence:
+	case TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall:
 		if !keys.Verify(t.SenderPubKey, msg[:], t.SenderSig) {
 			return rgerrors.New(rgerrors.ErrInvalidSignature, "sender signature verification failed")
 		}

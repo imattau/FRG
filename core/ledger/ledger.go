@@ -179,6 +179,26 @@ func (l *Ledger) Move(from, to [32]byte, amount *big.Int) error {
 	})
 }
 
+// MoveTx moves amount from one account to another within an existing bolt transaction.
+// No nonce enforcement — intended for contract internal transfers.
+func (l *Ledger) MoveTx(btx *bolt.Tx, from, to [32]byte, amount *big.Int) error {
+	if err := validateUint256(amount, "move amount"); err != nil {
+		return err
+	}
+	b := btx.Bucket(balancesBucket)
+	fromBal := readBalance(b, from)
+	if fromBal.Cmp(amount) < 0 {
+		return rgerrors.New(rgerrors.ErrInsufficientFunds, "insufficient balance to move")
+	}
+	fromBal.Sub(fromBal, amount)
+	toBal := readBalance(b, to)
+	toBal.Add(toBal, amount)
+	if err := writeBalance(b, from, fromBal); err != nil {
+		return err
+	}
+	return writeBalance(b, to, toBal)
+}
+
 // Seed sets an account balance directly. Used for genesis and testing only.
 // Does not enforce any supply constraints.
 func (l *Ledger) Seed(account [32]byte, amount *big.Int) error {

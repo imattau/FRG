@@ -26,6 +26,12 @@ const (
 	ErrInvalidTxType               ErrorCode = "ERR_019"
 	ErrEmptyValidatorSet           ErrorCode = "ERR_020"
 	ErrBlockHeightSequenceFault    ErrorCode = "ERR_021"
+	ErrContractBytecodeTooLarge    ErrorCode = "ERR_022"
+	ErrContractOutOfGas            ErrorCode = "ERR_023"
+	ErrContractTrap                ErrorCode = "ERR_024"
+	ErrContractNonDeterministic    ErrorCode = "ERR_025"
+	ErrContractNotFound            ErrorCode = "ERR_026"
+	ErrContractStateInvalid        ErrorCode = "ERR_027"
 )
 
 type RGError struct {

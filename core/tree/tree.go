@@ -44,13 +44,13 @@ func (b *Block) BuildRoot() ([32]byte, error) {
 
 func atomicLayer(txs []*tx.Tx) ([]*node.RGNode, error) {
 	nodes := make([]*node.RGNode, len(txs))
-	for i, tx := range txs {
-		txID, err := tx.ID()
+	for i, t := range txs {
+		txID, err := t.ID()
 		if err != nil {
 			return nil, err
 		}
 
-		value := new(big.Int).Set(tx.Value)
+		value := new(big.Int).Set(t.Value)
 		sumSquares := new(big.Int).Mul(value, value)
 		if sumSquares.Sign() < 0 || sumSquares.Cmp(hash.UINT256_MAX) > 0 {
 			return nil, rgerrors.New(rgerrors.ErrArithmeticOverflow, "tx square exceeds uint256")
@@ -65,6 +65,9 @@ func atomicLayer(txs []*tx.Tx) ([]*node.RGNode, error) {
 			SumValues:  value,
 			SumSquares: sumSquares,
 			Count:      1,
+		}
+		if t.Type == tx.TxTypeContractDeploy || t.Type == tx.TxTypeContractCall {
+			nodes[i].ContractCount = 1
 		}
 	}
 	return nodes, nil
@@ -139,6 +142,7 @@ func coarseGrain(chunk []*node.RGNode, parentScale uint32) (*node.RGNode, error)
 	sumValues := big.NewInt(0)
 	sumSquares := big.NewInt(0)
 	count := uint64(0)
+	contractCount := uint64(0)
 	children := make([][32]byte, K)
 
 	for i, child := range chunk {
@@ -159,6 +163,7 @@ func coarseGrain(chunk []*node.RGNode, parentScale uint32) (*node.RGNode, error)
 		}
 
 		count += child.Count
+		contractCount += child.ContractCount
 	}
 
 	volume := new(big.Int).Set(sumValues)
@@ -180,13 +185,14 @@ func coarseGrain(chunk []*node.RGNode, parentScale uint32) (*node.RGNode, error)
 	}
 
 	parent := &node.RGNode{
-		Scale:      parentScale,
-		Volume:     volume,
-		Variance:   variance,
-		Children:   children,
-		SumValues:  new(big.Int).Set(sumValues),
-		SumSquares: new(big.Int).Set(sumSquares),
-		Count:      count,
+		Scale:         parentScale,
+		Volume:        volume,
+		Variance:      variance,
+		Children:      children,
+		SumValues:     new(big.Int).Set(sumValues),
+		SumSquares:    new(big.Int).Set(sumSquares),
+		Count:         count,
+		ContractCount: contractCount,
 	}
 	parent.Sig = node.DeriveSignature(parent)
 

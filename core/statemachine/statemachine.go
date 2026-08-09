@@ -11,6 +11,7 @@ import (
 	"github.com/imattau/frg/core/staking"
 	"github.com/imattau/frg/core/tree"
 	"github.com/imattau/frg/core/tx"
+	"github.com/imattau/frg/core/contract"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -43,8 +44,13 @@ type StateMachine struct {
 // and used to construct l and s.
 func New(db *bolt.DB, l *ledger.Ledger, s *staking.Store) (*StateMachine, error) {
 	if err := db.Update(func(btx *bolt.Tx) error {
-		_, err := btx.CreateBucketIfNotExists(metaBucket)
-		return err
+		if _, err := btx.CreateBucketIfNotExists(metaBucket); err != nil {
+			return err
+		}
+		if _, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode")); err != nil {
+			return err
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -127,8 +133,22 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 	}
 	mintAmount := mint.MintPerBlock(totalSupply, totalStaked)
 
-	// Single atomic write: transfers, gas burn, miss-evidence, mint, meta.
+	// Single atomic write: contracts, transfers, gas burn, miss-evidence, mint, meta.
 	if err := sm.db.Update(func(btx *bolt.Tx) error {
+		// 0. Execute contract deployments and calls.
+		for _, t := range b.Txs {
+			switch t.Type {
+			case tx.TxTypeContractDeploy:
+				if _, err := contract.Deploy(btx, sm.ledger, t, b.Height); err != nil {
+					return err
+				}
+			case tx.TxTypeContractCall:
+				if _, err := contract.Call(btx, sm.ledger, t, b.Height); err != nil {
+					return err
+				}
+			}
+		}
+
 		// 1. Apply transfers in proposer order.
 		for _, t := range b.Txs {
 			if t.Type == tx.TxTypeTransfer {
