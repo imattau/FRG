@@ -55,11 +55,43 @@ type StatusResponse struct {
 	GrpcOnly       bool   `json:"grpc_only,omitempty"`
 }
 
+type AccountRequest struct {
+	Pubkey []byte `json:"pubkey,omitempty"`
+}
+
+type AccountResponse struct {
+	Pubkey  []byte `json:"pubkey,omitempty"`
+	Balance string `json:"balance,omitempty"`
+	Nonce   uint64 `json:"nonce,omitempty"`
+}
+
+type ValidatorEntry struct {
+	Pubkey []byte `json:"pubkey,omitempty"`
+	Bond   string `json:"bond,omitempty"`
+}
+
+type ValidatorList struct {
+	Validators []*ValidatorEntry `json:"validators,omitempty"`
+}
+
+type MempoolEntry struct {
+	Txid   []byte `json:"txid,omitempty"`
+	Sender string `json:"sender,omitempty"`
+	Nonce  uint64 `json:"nonce,omitempty"`
+}
+
+type MempoolList struct {
+	Entries []*MempoolEntry `json:"entries,omitempty"`
+}
+
 type FRGClient interface {
 	SubmitTx(ctx context.Context, in *RawBytes, opts ...grpc.CallOption) (*SubmitResponse, error)
 	SubmitBatch(ctx context.Context, in *RawBytesArray, opts ...grpc.CallOption) (*SubmitResponse, error)
 	SubscribeBlocks(ctx context.Context, in *Empty, opts ...grpc.CallOption) (FRG_SubscribeBlocksClient, error)
 	GetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*StatusResponse, error)
+	GetAccount(ctx context.Context, in *AccountRequest, opts ...grpc.CallOption) (*AccountResponse, error)
+	ListValidators(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ValidatorList, error)
+	ListMempool(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*MempoolList, error)
 }
 
 type fRGClient struct {
@@ -129,11 +161,41 @@ func (c *fRGClient) GetStatus(ctx context.Context, in *Empty, opts ...grpc.CallO
 	return out, nil
 }
 
+func (c *fRGClient) GetAccount(ctx context.Context, in *AccountRequest, opts ...grpc.CallOption) (*AccountResponse, error) {
+	out := new(AccountResponse)
+	err := c.cc.Invoke(ctx, "/frg.FRG/GetAccount", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fRGClient) ListValidators(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ValidatorList, error) {
+	out := new(ValidatorList)
+	err := c.cc.Invoke(ctx, "/frg.FRG/ListValidators", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fRGClient) ListMempool(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*MempoolList, error) {
+	out := new(MempoolList)
+	err := c.cc.Invoke(ctx, "/frg.FRG/ListMempool", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type FRGServer interface {
 	SubmitTx(context.Context, *RawBytes) (*SubmitResponse, error)
 	SubmitBatch(context.Context, *RawBytesArray) (*SubmitResponse, error)
 	SubscribeBlocks(*Empty, FRG_SubscribeBlocksServer) error
 	GetStatus(context.Context, *Empty) (*StatusResponse, error)
+	GetAccount(context.Context, *AccountRequest) (*AccountResponse, error)
+	ListValidators(context.Context, *Empty) (*ValidatorList, error)
+	ListMempool(context.Context, *Empty) (*MempoolList, error)
 	mustEmbedUnimplementedFRGServer()
 }
 
@@ -153,6 +215,18 @@ func (UnimplementedFRGServer) SubscribeBlocks(*Empty, FRG_SubscribeBlocksServer)
 
 func (UnimplementedFRGServer) GetStatus(context.Context, *Empty) (*StatusResponse, error) {
 	return nil, errors.New("method GetStatus not implemented")
+}
+
+func (UnimplementedFRGServer) GetAccount(context.Context, *AccountRequest) (*AccountResponse, error) {
+	return nil, errors.New("method GetAccount not implemented")
+}
+
+func (UnimplementedFRGServer) ListValidators(context.Context, *Empty) (*ValidatorList, error) {
+	return nil, errors.New("method ListValidators not implemented")
+}
+
+func (UnimplementedFRGServer) ListMempool(context.Context, *Empty) (*MempoolList, error) {
+	return nil, errors.New("method ListMempool not implemented")
 }
 
 func (UnimplementedFRGServer) mustEmbedUnimplementedFRGServer() {}
@@ -232,6 +306,60 @@ func _FRG_GetStatus_Handler(srv any, ctx context.Context, dec func(any) error, i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FRG_GetAccount_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+	in := new(AccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FRGServer).GetAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/frg.FRG/GetAccount",
+	}
+	handler := func(ctx context.Context, req any) (any, error) {
+		return srv.(FRGServer).GetAccount(ctx, req.(*AccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FRG_ListValidators_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FRGServer).ListValidators(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/frg.FRG/ListValidators",
+	}
+	handler := func(ctx context.Context, req any) (any, error) {
+		return srv.(FRGServer).ListValidators(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _FRG_ListMempool_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FRGServer).ListMempool(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/frg.FRG/ListMempool",
+	}
+	handler := func(ctx context.Context, req any) (any, error) {
+		return srv.(FRGServer).ListMempool(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 type fRGSubscribeBlocksServer struct {
 	grpc.ServerStream
 }
@@ -255,6 +383,18 @@ var FRG_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStatus",
 			Handler:    _FRG_GetStatus_Handler,
+		},
+		{
+			MethodName: "GetAccount",
+			Handler:    _FRG_GetAccount_Handler,
+		},
+		{
+			MethodName: "ListValidators",
+			Handler:    _FRG_ListValidators_Handler,
+		},
+		{
+			MethodName: "ListMempool",
+			Handler:    _FRG_ListMempool_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

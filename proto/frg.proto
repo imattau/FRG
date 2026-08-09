@@ -9,6 +9,9 @@ service FRG {
   rpc SubmitBatch(RawBytesArray) returns (SubmitResponse);
   rpc SubscribeBlocks(Empty) returns (stream RawBytes);
   rpc GetStatus(Empty) returns (StatusResponse);
+  rpc GetAccount(AccountRequest) returns (AccountResponse);
+  rpc ListValidators(Empty) returns (ValidatorList);
+  rpc ListMempool(Empty) returns (MempoolList);
 }
 
 message RawBytes {
@@ -35,4 +38,33 @@ message StatusResponse {
   uint32 consensus_round = 6;
   string consensus_phase = 7;
   bool grpc_only = 8;
+}
+
+message AccountRequest {
+  bytes pubkey = 1;
+}
+
+message AccountResponse {
+  bytes pubkey = 1;
+  string balance = 2;
+  uint64 nonce = 3;
+}
+
+message ValidatorEntry {
+  bytes pubkey = 1;
+  string bond = 2;
+}
+
+message ValidatorList {
+  repeated ValidatorEntry validators = 1;
+}
+
+message MempoolEntry {
+  bytes txid = 1;
+  string sender = 2;
+  uint64 nonce = 3;
+}
+
+message MempoolList {
+  repeated MempoolEntry entries = 1;
 }

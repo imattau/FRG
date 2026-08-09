@@ -10,3 +10,4 @@ coverage.out
 # Local Go toolchain/cache directories
 /.gocache/
 /.toolchain/
+frg-faucet

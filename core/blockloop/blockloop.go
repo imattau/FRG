@@ -84,9 +84,17 @@ func (bl *BlockLoop) Enqueue(t *tx.Tx) {
 }
 
 func (bl *BlockLoop) Len() int {
-    bl.mempool.mu.Lock()
-    defer bl.mempool.mu.Unlock()
-    return len(bl.mempool.queue)
+	bl.mempool.mu.Lock()
+	defer bl.mempool.mu.Unlock()
+	return len(bl.mempool.queue)
+}
+
+func (bl *BlockLoop) Snapshot() []*tx.Tx {
+	bl.mempool.mu.Lock()
+	defer bl.mempool.mu.Unlock()
+	out := make([]*tx.Tx, len(bl.mempool.queue))
+	copy(out, bl.mempool.queue)
+	return out
 }
 
 func (bl *BlockLoop) Has(id [32]byte) bool {

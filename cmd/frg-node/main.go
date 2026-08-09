@@ -126,7 +126,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runtime := &nodeRuntime{grpcOnly: *grpcOnly, sm: sm, staking: s}
+	runtime := &nodeRuntime{grpcOnly: *grpcOnly, sm: sm, staking: s, ledger: l}
 	var p2pNode *p2p.Node
 	if !*grpcOnly {
 		p2pNode, err = p2p.New(ctx, kp, p2p.Config{
@@ -349,7 +349,7 @@ func startGRPCServer(listenAddr string, node nodeRuntimeAPI) (*grpc.Server, stri
 	}
 
 	server := grpc.NewServer()
-	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node})
+	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node})
 
 	go func() {
 		if err := server.Serve(ln); err != nil {
@@ -363,6 +363,7 @@ func startGRPCServer(listenAddr string, node nodeRuntimeAPI) (*grpc.Server, stri
 type nodeRuntimeAPI interface {
 	nodeAPI
 	nodeStatusAPI
+	nodeQueryAPI
 }
 
 type nodeRuntime struct {
@@ -371,6 +372,7 @@ type nodeRuntime struct {
 	blockloop *blockloop.BlockLoop
 	sm        *statemachine.StateMachine
 	staking   *staking.Store
+	ledger    *ledger.Ledger
 	engine    *consensus.Engine
 }
 
@@ -450,6 +452,63 @@ func (n *nodeRuntime) Status() (*frgpb.StatusResponse, error) {
 		ConsensusPhase: consensusPhase,
 		GrpcOnly:       n.grpcOnly,
 	}, nil
+}
+
+func (n *nodeRuntime) GetAccount(pubkey [32]byte) (*frgpb.AccountResponse, error) {
+	bal, err := n.ledger.BalanceOf(pubkey)
+	if err != nil {
+		return nil, fmt.Errorf("balance: %w", err)
+	}
+	nonce, err := n.ledger.NonceOf(pubkey)
+	if err != nil {
+		return nil, fmt.Errorf("nonce: %w", err)
+	}
+	return &frgpb.AccountResponse{
+		Pubkey:  pubkey[:],
+		Balance: bal.String(),
+		Nonce:   nonce,
+	}, nil
+}
+
+func (n *nodeRuntime) ListValidators() (*frgpb.ValidatorList, error) {
+	pubkeys, bonds, err := n.staking.BondedAmounts()
+	if err != nil {
+		return nil, fmt.Errorf("bonded amounts: %w", err)
+	}
+	entries := make([]*frgpb.ValidatorEntry, len(pubkeys))
+	for i, pk := range pubkeys {
+		pkCopy := pk
+		bond := "0"
+		if i < len(bonds) && bonds[i] != nil {
+			bond = bonds[i].String()
+		}
+		entries[i] = &frgpb.ValidatorEntry{
+			Pubkey: pkCopy[:],
+			Bond:   bond,
+		}
+	}
+	return &frgpb.ValidatorList{Validators: entries}, nil
+}
+
+func (n *nodeRuntime) ListMempool() (*frgpb.MempoolList, error) {
+	if n.blockloop == nil {
+		return &frgpb.MempoolList{}, nil
+	}
+	txs := n.blockloop.Snapshot()
+	entries := make([]*frgpb.MempoolEntry, 0, len(txs))
+	for _, t := range txs {
+		txid, err := t.ID()
+		if err != nil {
+			continue
+		}
+		id := txid
+		entries = append(entries, &frgpb.MempoolEntry{
+			Txid:   id[:],
+			Sender: t.Sender,
+			Nonce:  t.Nonce,
+		})
+	}
+	return &frgpb.MempoolList{Entries: entries}, nil
 }
 
 func consensusPhaseName(p consensus.Phase) string {

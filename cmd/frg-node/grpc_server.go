@@ -18,10 +18,17 @@ type nodeStatusAPI interface {
 	Status() (*frgpb.StatusResponse, error)
 }
 
+type nodeQueryAPI interface {
+	GetAccount(pubkey [32]byte) (*frgpb.AccountResponse, error)
+	ListValidators() (*frgpb.ValidatorList, error)
+	ListMempool() (*frgpb.MempoolList, error)
+}
+
 type nodeGRPCServer struct {
 	frgpb.UnimplementedFRGServer
-	node nodeAPI
-	stat nodeStatusAPI
+	node  nodeAPI
+	stat  nodeStatusAPI
+	query nodeQueryAPI
 }
 
 func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frgpb.SubmitResponse, error) {
@@ -83,4 +90,30 @@ func (s *nodeGRPCServer) GetStatus(context.Context, *frgpb.Empty) (*frgpb.Status
 		return &frgpb.StatusResponse{}, nil
 	}
 	return s.stat.Status()
+}
+
+func (s *nodeGRPCServer) GetAccount(_ context.Context, req *frgpb.AccountRequest) (*frgpb.AccountResponse, error) {
+	if s.query == nil {
+		return nil, fmt.Errorf("query backend not available")
+	}
+	if len(req.Pubkey) != 32 {
+		return nil, fmt.Errorf("pubkey must be 32 bytes")
+	}
+	var pubkey [32]byte
+	copy(pubkey[:], req.Pubkey)
+	return s.query.GetAccount(pubkey)
+}
+
+func (s *nodeGRPCServer) ListValidators(context.Context, *frgpb.Empty) (*frgpb.ValidatorList, error) {
+	if s.query == nil {
+		return nil, fmt.Errorf("query backend not available")
+	}
+	return s.query.ListValidators()
+}
+
+func (s *nodeGRPCServer) ListMempool(context.Context, *frgpb.Empty) (*frgpb.MempoolList, error) {
+	if s.query == nil {
+		return nil, fmt.Errorf("query backend not available")
+	}
+	return s.query.ListMempool()
 }

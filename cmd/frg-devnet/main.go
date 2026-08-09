@@ -39,11 +39,16 @@ chain_id = "%s"
 `
 
 type devNode struct {
-	index   int
-	kp      *keys.Keypair
-	peerID  string
-	p2pPort int
+	index    int
+	kp       *keys.Keypair
+	peerID   string
+	p2pPort  int
 	grpcPort int
+}
+
+type stressAccount struct {
+	Seed   string `json:"seed"`
+	Pubkey string `json:"pubkey"`
 }
 
 func main() {
@@ -55,6 +60,8 @@ func main() {
 	baseP2PPort := flag.Int("base-p2p-port", 17777, "starting P2P port (node 0)")
 	baseGRPCPort := flag.Int("base-grpc-port", 50051, "starting gRPC port (node 0)")
 	dockerCompose := flag.Bool("docker", true, "use /dns4/ scheme for peer addresses (Docker Compose)")
+	stressAccounts := flag.Int("stress-accounts", 0, "number of pre-funded stress-test accounts")
+	faucetBalance := flag.String("faucet-balance", "1000000", "faucet genesis balance")
 	flag.Parse()
 
 	n := *validators
@@ -81,24 +88,58 @@ func main() {
 			os.Exit(1)
 		}
 		nodes[i] = devNode{
-			index:   i,
-			kp:      kp,
-			peerID:  pid.String(),
-			p2pPort: *baseP2PPort + i,
+			index:    i,
+			kp:       kp,
+			peerID:   pid.String(),
+			p2pPort:  *baseP2PPort + i,
 			grpcPort: *baseGRPCPort + i,
+		}
+	}
+
+	faucetKP, err := keys.GenerateKeypair()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "generate faucet keypair: %v\n", err)
+		os.Exit(1)
+	}
+	faucetPubHex := hex.EncodeToString(faucetKP.PublicKey[:])
+
+	stressList := make([]stressAccount, *stressAccounts)
+	for i := 0; i < *stressAccounts; i++ {
+		skp, err := keys.GenerateKeypair()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "generate stress keypair %d: %v\n", i, err)
+			os.Exit(1)
+		}
+		seed := kpToSeed(skp)
+		stressList[i] = stressAccount{
+			Seed:   hex.EncodeToString(seed[:]),
+			Pubkey: hex.EncodeToString(skp.PublicKey[:]),
 		}
 	}
 
 	gen := genesis.Genesis{
 		ChainID:    *chainID,
 		Validators: make([]genesis.ValidatorEntry, n),
-		Balances:   make([]genesis.BalanceEntry, n),
+		Balances:   make([]genesis.BalanceEntry, 0, n+1+*stressAccounts),
 	}
 	for i, nd := range nodes {
 		pubHex := hex.EncodeToString(nd.kp.PublicKey[:])
 		gen.Validators[i] = genesis.ValidatorEntry{PubKey: pubHex, Bond: *bond}
-		gen.Balances[i] = genesis.BalanceEntry{Account: pubHex, Amount: *balance}
+		gen.Balances = append(gen.Balances, genesis.BalanceEntry{Account: pubHex, Amount: *balance})
 	}
+
+	gen.Balances = append(gen.Balances, genesis.BalanceEntry{Account: faucetPubHex, Amount: *faucetBalance})
+
+	for _, sa := range stressList {
+		gen.Balances = append(gen.Balances, genesis.BalanceEntry{Account: sa.Pubkey, Amount: *balance})
+	}
+
+	genData, err := json.MarshalIndent(gen, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marshal genesis: %v\n", err)
+		os.Exit(1)
+	}
+	genData = append(genData, '\n')
 
 	for _, nd := range nodes {
 		dir := filepath.Join(*outputDir, fmt.Sprintf("node-%d", nd.index))
@@ -113,12 +154,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		genData, err := json.MarshalIndent(gen, "", "  ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "marshal genesis for node %d: %v\n", nd.index, err)
-			os.Exit(1)
-		}
-		genData = append(genData, '\n')
 		if err := os.WriteFile(filepath.Join(dir, "genesis.json"), genData, 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "write genesis for node %d: %v\n", nd.index, err)
 			os.Exit(1)
@@ -132,13 +167,32 @@ func main() {
 		}
 	}
 
+	faucetSeed := kpToSeed(faucetKP)
+	if err := os.WriteFile(filepath.Join(*outputDir, "faucet.key"), faucetSeed[:], 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "write faucet key: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *stressAccounts > 0 {
+		data, _ := json.MarshalIndent(stressList, "", "  ")
+		data = append(data, '\n')
+		if err := os.WriteFile(filepath.Join(*outputDir, "stress_accounts.json"), data, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "write stress accounts: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Printf("Devnet generated: %d nodes in %s/\n", n, *outputDir)
+	fmt.Printf("  faucet  %s  balance=%s\n", faucetPubHex, *faucetBalance)
 	for _, nd := range nodes {
 		fmt.Printf("  node-%d  p2p=:%d  grpc=:%d  peer=%s\n", nd.index, nd.p2pPort, nd.grpcPort, nd.peerID)
 	}
+	if *stressAccounts > 0 {
+		fmt.Printf("  stress   %d pre-funded accounts\n", *stressAccounts)
+	}
 
 	if *dockerCompose {
-		if err := writeDockerCompose(*outputDir, nodes); err != nil {
+		if err := writeDockerCompose(*outputDir, nodes, *stressAccounts > 0); err != nil {
 			fmt.Fprintf(os.Stderr, "write docker-compose: %v\n", err)
 			os.Exit(1)
 		}
@@ -174,7 +228,7 @@ func buildPeerList(nodes []devNode, selfIdx int, dockerCompose bool) string {
 	return lines
 }
 
-func writeDockerCompose(outputDir string, nodes []devNode) error {
+func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool) error {
 	var buf []byte
 	buf = append(buf, "version: \"3.8\"\n\nservices:\n"...)
 
@@ -196,9 +250,25 @@ func writeDockerCompose(outputDir string, nodes []devNode) error {
 			nd.grpcPort, nd.grpcPort,
 			nd.p2pPort, nd.p2pPort)
 		buf = append(buf, svc...)
-		if nd.index < len(nodes)-1 {
-			buf = append(buf, '\n')
-		}
+		buf = append(buf, '\n')
+	}
+
+	if includeFaucet {
+		buf = append(buf, []byte(`  frg-faucet:
+    build:
+      context: ../
+      dockerfile: Dockerfile.faucet
+    container_name: frg-faucet
+    working_dir: /data
+    command: frg-faucet --key faucet.key --db faucet.db --node frg-node-0:50051 --listen 0.0.0.0:8088
+    volumes:
+      - ./:/data
+    ports:
+      - "8088:8088"
+    restart: unless-stopped
+    depends_on:
+      - frg-node-0
+`)...)
 	}
 
 	return os.WriteFile(filepath.Join(outputDir, "docker-compose.yml"), buf, 0644)
