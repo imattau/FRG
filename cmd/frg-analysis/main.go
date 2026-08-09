@@ -56,15 +56,15 @@ var patterns = []Pattern{
 }
 
 type LevelFeatures struct {
-	Level            int
-	Scale            uint32
-	NodeCount        int
-	AtomicPct        float64
-	StagnantPct      float64
-	LaminarPct       float64
-	VolatilePct      float64
-	ContractPct      float64
-	VolatileNodeCnt  int
+	Level           int
+	Scale           uint32
+	NodeCount       int
+	AtomicPct       float64
+	StagnantPct     float64
+	LaminarPct      float64
+	VolatilePct     float64
+	ContractPct     float64
+	VolatileNodeCnt int
 }
 
 type PatternFeatures struct {
