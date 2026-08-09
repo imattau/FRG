@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"math/big"
+	"sort"
 	"sync"
 	"time"
 
@@ -33,14 +34,15 @@ type EngineStatus struct {
 
 // RoundState holds the mutable state for one consensus round.
 type RoundState struct {
-	Height      uint64
-	Round       uint32
-	Phase       Phase
-	Proposal    *BlockProposal
-	Prevotes    map[[32]byte]Vote // validatorPK → vote
-	Precommits  map[[32]byte]Vote // validatorPK → vote
-	LockedBlock *[32]byte         // nil if unlocked
-	LockedRound int32             // -1 if unlocked
+	Height          uint64
+	Round           uint32
+	Phase           Phase
+	Proposal        *BlockProposal
+	Prevotes        map[[32]byte]Vote // validatorPK → vote
+	Precommits      map[[32]byte]Vote // validatorPK → vote
+	LockedBlock     *[32]byte         // nil if unlocked
+	LockedRound     int32             // -1 if unlocked
+	LastAttestation AttestationSet
 }
 
 // NewRoundState creates a fresh RoundState for the given height.
@@ -200,6 +202,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		proposeTimer.Stop()
 		blockHash, hasQuorum := e.quorumBlock(rs.Precommits, validators, stakes)
 		if hasQuorum && blockHash != [32]byte{} && e.commit(rs, blockHash) {
+			rs.LastAttestation = attestationFromPrecommits(rs.Precommits, blockHash)
 			validators, stakes, err = e.staking.BondedAmounts()
 			if err != nil {
 				return err
@@ -290,9 +293,9 @@ func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
 	var p *BlockProposal
 	var err error
 	if proposer, ok := e.proposer.(StateRootProposer); ok {
-		p, err = proposer.ProposeForState(rs.Height, rs.Round, AttestationSet{}, prevRoot)
+		p, err = proposer.ProposeForState(rs.Height, rs.Round, rs.LastAttestation, prevRoot)
 	} else {
-		p, err = e.proposer.Propose(rs.Height, rs.Round, AttestationSet{})
+		p, err = e.proposer.Propose(rs.Height, rs.Round, rs.LastAttestation)
 	}
 	if err != nil {
 		return
@@ -367,6 +370,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 				rs.Phase = PhaseCommit
 				e.setStatus(rs)
 				if e.commit(rs, blockHash) {
+					rs.LastAttestation = attestationFromPrecommits(rs.Precommits, blockHash)
 					var refreshErr error
 					validators, stakes, refreshErr = e.staking.BondedAmounts()
 					if refreshErr != nil {
@@ -510,6 +514,23 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 		e.proposer.OnCommit(rs.Height, rs.Proposal.Txs)
 	}
 	return true
+}
+
+func attestationFromPrecommits(votes map[[32]byte]Vote, blockHash [32]byte) AttestationSet {
+	attestation := AttestationSet{BlockHash: blockHash}
+	for _, vote := range votes {
+		if vote.Type == VotePrecommit && vote.BlockHash == blockHash {
+			attestation.Votes = append(attestation.Votes, vote)
+		}
+	}
+	sort.Slice(attestation.Votes, func(i, j int) bool {
+		return string(attestation.Votes[i].ValidatorPK[:]) < string(attestation.Votes[j].ValidatorPK[:])
+	})
+	if len(attestation.Votes) > 0 {
+		attestation.Height = attestation.Votes[0].Height
+		attestation.Round = attestation.Votes[0].Round
+	}
+	return attestation
 }
 
 func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer *time.Timer) {

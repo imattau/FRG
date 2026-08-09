@@ -46,6 +46,12 @@ func encodeRoundState(rs *RoundState) ([]byte, error) {
 			buf.Write(data)
 		}
 	}
+	attestation, err := serializeAttestation(&rs.LastAttestation)
+	if err != nil {
+		return nil, err
+	}
+	writeU32(uint32(len(attestation)))
+	buf.Write(attestation)
 	return buf.Bytes(), nil
 }
 
@@ -123,10 +129,91 @@ func decodeRoundState(data []byte, chainID string) (*RoundState, error) {
 			}
 		}
 	}
+	if read.Len() > 0 {
+		attestationLen, err := readU32()
+		if err != nil || attestationLen > uint32(read.Len()) {
+			return nil, fmt.Errorf("snapshot attestation length")
+		}
+		attestationData := make([]byte, attestationLen)
+		if attestationLen > 0 {
+			if _, err := read.Read(attestationData); err != nil {
+				return nil, fmt.Errorf("snapshot attestation: %w", err)
+			}
+		}
+		attestation, err := deserializeAttestation(attestationData, chainID)
+		if err != nil {
+			return nil, err
+		}
+		rs.LastAttestation = *attestation
+	}
 	if read.Len() != 0 {
 		return nil, fmt.Errorf("snapshot trailing bytes")
 	}
 	return rs, nil
+}
+
+func serializeAttestation(attestation *AttestationSet) ([]byte, error) {
+	if attestation == nil || len(attestation.Votes) == 0 {
+		return nil, nil
+	}
+	if len(attestation.Votes) > maxPersistedVotes {
+		return nil, fmt.Errorf("too many attestation votes")
+	}
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.BigEndian, attestation.Height)
+	_ = binary.Write(&buf, binary.BigEndian, attestation.Round)
+	buf.Write(attestation.BlockHash[:])
+	_ = binary.Write(&buf, binary.BigEndian, uint32(len(attestation.Votes)))
+	for _, vote := range attestation.Votes {
+		data, err := vote.Serialize()
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(data)
+	}
+	return buf.Bytes(), nil
+}
+
+func deserializeAttestation(data []byte, chainID string) (*AttestationSet, error) {
+	if len(data) == 0 {
+		return &AttestationSet{}, nil
+	}
+	read := bytes.NewReader(data)
+	var height uint64
+	var round uint32
+	if err := binary.Read(read, binary.BigEndian, &height); err != nil {
+		return nil, fmt.Errorf("attestation height: %w", err)
+	}
+	if err := binary.Read(read, binary.BigEndian, &round); err != nil {
+		return nil, fmt.Errorf("attestation round: %w", err)
+	}
+	var blockHash [32]byte
+	if _, err := read.Read(blockHash[:]); err != nil {
+		return nil, fmt.Errorf("attestation block hash: %w", err)
+	}
+	var count uint32
+	if err := binary.Read(read, binary.BigEndian, &count); err != nil || count > maxPersistedVotes || uint64(count)*141 > uint64(read.Len()) {
+		return nil, fmt.Errorf("attestation vote count")
+	}
+	attestation := &AttestationSet{Height: height, Round: round, BlockHash: blockHash, Votes: make([]Vote, 0, count)}
+	for i := uint32(0); i < count; i++ {
+		data := make([]byte, 141)
+		if _, err := read.Read(data); err != nil {
+			return nil, fmt.Errorf("attestation vote: %w", err)
+		}
+		vote, err := DeserializeVote(data)
+		if err != nil || !VerifyVoteForChain(vote, chainID) {
+			return nil, fmt.Errorf("attestation vote signature")
+		}
+		if vote.Type != VotePrecommit || vote.Height != height || vote.Round != round || vote.BlockHash != blockHash {
+			return nil, fmt.Errorf("attestation vote context")
+		}
+		attestation.Votes = append(attestation.Votes, *vote)
+	}
+	if read.Len() != 0 {
+		return nil, fmt.Errorf("attestation trailing bytes")
+	}
+	return attestation, nil
 }
 
 func serializeOptionalProposal(p *BlockProposal) ([]byte, error) {

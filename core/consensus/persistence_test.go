@@ -22,6 +22,13 @@ func TestRoundStateSnapshotRoundTrip(t *testing.T) {
 	locked := [32]byte{2}
 	rs.LockedBlock = &locked
 	rs.LockedRound = 1
+	precommit := Vote{Type: VotePrecommit, Height: 3, Round: 1, BlockHash: [32]byte{9}, ValidatorPK: kp.PublicKey}
+	precommitSig, err := kp.Sign(VoteSignBytesForChain(&precommit, chainID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	precommit.Sig = precommitSig
+	rs.LastAttestation = AttestationSet{Height: 3, Round: 1, BlockHash: precommit.BlockHash, Votes: []Vote{precommit}}
 
 	raw, err := encodeRoundState(rs)
 	if err != nil {
@@ -36,5 +43,8 @@ func TestRoundStateSnapshotRoundTrip(t *testing.T) {
 	}
 	if got.Prevotes[kp.PublicKey].BlockHash != vote.BlockHash {
 		t.Fatal("vote was not restored")
+	}
+	if len(got.LastAttestation.Votes) != 1 || got.LastAttestation.Votes[0].BlockHash != precommit.BlockHash {
+		t.Fatal("last attestation was not restored")
 	}
 }
