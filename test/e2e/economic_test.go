@@ -153,16 +153,16 @@ func TestMintEmissionAtZeroStaking(t *testing.T) {
 	supply := new(big.Int).Mul(big.NewInt(400_000_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
 	staked := big.NewInt(0)
 	result := mint.MintPerBlock(supply, staked)
-	
+
 	// MaxAnnualRatePct = 10%, BlocksPerYear = 5,256_000
 	// TargetStakingRatioPct = 50%
 	// deficit = targetStaked - totalStaked = 50% - 0% = 50%
 	// reward = (maxPerBlock * deficit) / targetStaked = maxPerBlock * 0.5 / 0.5 = maxPerBlock
-	
+
 	expected := new(big.Int).Mul(supply, big.NewInt(mint.MaxAnnualRatePct))
 	expected.Div(expected, big.NewInt(100))
 	expected.Div(expected, big.NewInt(mint.BlocksPerYear))
-	
+
 	if result.Cmp(expected) != 0 {
 		t.Fatalf("zero staking emission: got %v want %v", result, expected)
 	}
@@ -259,6 +259,11 @@ func TestContractEconomicCycle(t *testing.T) {
 
 	sender := makeKeypair(t)
 	if err := l.Seed(sender.PublicKey, big.NewInt(5000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.Update(func(btx *bolt.Tx) error {
+		return sm.SetTotalSupplyTx(btx, big.NewInt(5000))
+	}); err != nil {
 		t.Fatal(err)
 	}
 

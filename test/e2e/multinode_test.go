@@ -28,6 +28,27 @@ type nodeStack struct {
 	engine  *consensus.Engine
 }
 
+func initializeNodeGenesis(t testing.TB, target *nodeStack, validators []*nodeStack, balance, bond *big.Int) {
+	t.Helper()
+	totalSupply := big.NewInt(0)
+	for _, v := range validators {
+		if err := target.ledger.Seed(v.kp.PublicKey, new(big.Int).Set(balance)); err != nil {
+			t.Fatalf("ledger.Seed: %v", err)
+		}
+		totalSupply.Add(totalSupply, balance)
+	}
+	if err := target.db.Update(func(btx *bolt.Tx) error {
+		return target.sm.SetTotalSupplyTx(btx, totalSupply)
+	}); err != nil {
+		t.Fatalf("SetTotalSupplyTx: %v", err)
+	}
+	for _, v := range validators {
+		if err := target.staking.Bond(v.kp.PublicKey, new(big.Int).Set(bond), 0); err != nil {
+			t.Fatalf("staking.Bond: %v", err)
+		}
+	}
+}
+
 func newNodeStack(t *testing.T, ctx context.Context) *nodeStack {
 	t.Helper()
 	dir := t.TempDir()
@@ -109,14 +130,7 @@ func TestMultiNodeConsensus(t *testing.T) {
 
 	// Genesis setup: seed + bond all 4 on all nodes
 	for _, target := range nodes {
-		for _, v := range nodes {
-			if err := target.ledger.Seed(v.kp.PublicKey, big.NewInt(9000)); err != nil {
-				t.Fatalf("ledger.Seed: %v", err)
-			}
-			if err := target.staking.Bond(v.kp.PublicKey, big.NewInt(1000), 0); err != nil {
-				t.Fatalf("staking.Bond: %v", err)
-			}
-		}
+		initializeNodeGenesis(t, target, nodes, big.NewInt(9000), big.NewInt(1000))
 	}
 
 	// Full mesh connect

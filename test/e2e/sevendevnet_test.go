@@ -41,10 +41,7 @@ func TestSevenNodeDevnetContracts(t *testing.T) {
 
 	// Genesis setup: seed + bond all validators (all accounts start with 9000 balance, 1000 bonded)
 	for _, target := range nodes {
-		for _, v := range nodes {
-			target.ledger.Seed(v.kp.PublicKey, big.NewInt(9000))
-			target.staking.Bond(v.kp.PublicKey, big.NewInt(1000), 0)
-		}
+		initializeNodeGenesis(t, target, nodes, big.NewInt(9000), big.NewInt(1000))
 	}
 
 	// Full mesh connect

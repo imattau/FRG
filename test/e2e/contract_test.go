@@ -8,7 +8,6 @@ import (
 
 	"github.com/imattau/frg/core/contract"
 	"github.com/imattau/frg/core/tx"
-	bolt "go.etcd.io/bbolt"
 )
 
 // minimalWasm is a valid WASM module exporting "init" and "call" (both no-ops).
@@ -40,20 +39,7 @@ func TestContractE2E(t *testing.T) {
 
 	// Genesis: seed + bond both validators
 	for _, target := range nodes {
-		for _, v := range nodes {
-			if err := target.ledger.Seed(v.kp.PublicKey, big.NewInt(9000)); err != nil {
-				t.Fatal(err)
-			}
-			if err := target.staking.Bond(v.kp.PublicKey, big.NewInt(1000), 0); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := target.db.Update(func(btx *bolt.Tx) error {
-			_, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode"))
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
+		initializeNodeGenesis(t, target, nodes, big.NewInt(9000), big.NewInt(1000))
 	}
 
 	// Connect mesh

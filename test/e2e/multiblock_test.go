@@ -23,10 +23,7 @@ func TestMultiBlockConsensus(t *testing.T) {
 	}()
 
 	for _, target := range nodes {
-		for _, v := range nodes {
-			target.ledger.Seed(v.kp.PublicKey, bigInt(9000))
-			target.staking.Bond(v.kp.PublicKey, bigInt(1000), 0)
-		}
+		initializeNodeGenesis(t, target, nodes, bigInt(9000), bigInt(1000))
 	}
 
 	for i := 0; i < len(nodes); i++ {
