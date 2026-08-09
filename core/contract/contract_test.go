@@ -103,9 +103,13 @@ func TestContractDeployAndCall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create contract bytecode bucket
+	// Create contract buckets
 	if err := db.Update(func(btx *bolt.Tx) error {
 		_, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode"))
+		if err != nil {
+			return err
+		}
+		_, err = btx.CreateBucketIfNotExists([]byte("contract_state"))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -127,7 +131,7 @@ func TestContractDeployAndCall(t *testing.T) {
 	var stateRoot [32]byte
 	if err := db.Update(func(btx *bolt.Tx) error {
 		var err error
-		stateRoot, err = contract.Deploy(btx, l, deployTx, 1)
+		stateRoot, _, err = contract.Deploy(btx, l, deployTx, 1)
 		return err
 	}); err != nil {
 		t.Fatalf("deploy: %v", err)
@@ -163,7 +167,7 @@ func TestContractDeployAndCall(t *testing.T) {
 	var callRoot [32]byte
 	if err := db.Update(func(btx *bolt.Tx) error {
 		var err error
-		callRoot, err = contract.Call(btx, l, callTx, 2)
+		callRoot, _, err = contract.Call(btx, l, callTx, 2)
 		return err
 	}); err != nil {
 		t.Fatalf("call: %v", err)
@@ -185,6 +189,98 @@ func TestContractAddrDeterminism(t *testing.T) {
 	if addr1 == addr3 {
 		t.Fatal("different nonces should produce different addresses")
 	}
+}
+
+func TestContractStatePersistence(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Update(func(btx *bolt.Tx) error {
+		_, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode"))
+		if err != nil {
+			return err
+		}
+		_, err = btx.CreateBucketIfNotExists([]byte("contract_state"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deployTx := &tx.Tx{
+		Type:         tx.TxTypeContractDeploy,
+		Sender:       "alice",
+		Receiver:     "contract",
+		Value:        big.NewInt(0),
+		Nonce:        1,
+		SenderPubKey: kp.PublicKey,
+		WasmBytes:    minimalWasm,
+	}
+	sig, _ := deployTx.SignSender(kp)
+	deployTx.SenderSig = sig
+
+	var deployRoot [32]byte
+	if err := db.Update(func(btx *bolt.Tx) error {
+		var err error
+		deployRoot, _, err = contract.Deploy(btx, l, deployTx, 1)
+		return err
+	}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+
+	contractAddr := contract.ContractAddr(kp.PublicKey, 1)
+
+	var persisted []byte
+	db.View(func(btx *bolt.Tx) error {
+		persisted = btx.Bucket([]byte("contract_state")).Get(contractAddr[:])
+		return nil
+	})
+	if persisted == nil {
+		t.Fatal("contract state was not persisted after deploy")
+	}
+
+	callTx := &tx.Tx{
+		Type:           tx.TxTypeContractCall,
+		Sender:         "alice",
+		Receiver:       "contract",
+		Value:          big.NewInt(0),
+		Nonce:          2,
+		SenderPubKey:   kp.PublicKey,
+		ReceiverPubKey: contractAddr,
+		CallData:       []byte("call"),
+	}
+	sig2, _ := callTx.SignSender(kp)
+	callTx.SenderSig = sig2
+
+	if err := db.Update(func(btx *bolt.Tx) error {
+		_, _, err := contract.Call(btx, l, callTx, 2)
+		return err
+	}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	var persisted2 []byte
+	db.View(func(btx *bolt.Tx) error {
+		persisted2 = btx.Bucket([]byte("contract_state")).Get(contractAddr[:])
+		return nil
+	})
+	if len(persisted2) == 0 {
+		t.Fatal("contract state was lost after call")
+	}
+
+	_ = deployRoot
 }
 
 func bytesRepeat(b byte, n int) []byte {

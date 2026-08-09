@@ -20,19 +20,31 @@ type Block struct {
 }
 
 func (b *Block) BuildRoot() ([32]byte, error) {
-	if len(b.Txs) == 0 {
+	return BuildTreeRoot(b.Txs, nil)
+}
+
+// BuildTreeRoot constructs the RG state root from transactions plus optional contract state nodes.
+// contractNodes are appended to the atomic layer before coarse-graining.
+func BuildTreeRoot(txs []*tx.Tx, contractNodes []*node.RGNode) ([32]byte, error) {
+	if len(txs) == 0 && len(contractNodes) == 0 {
 		return node.EmptyBlockRoot(), nil
 	}
-	if len(b.Txs) > TMax {
-		return [32]byte{}, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "block has %d txs, max %d", len(b.Txs), TMax)
+	if len(txs) > TMax {
+		return [32]byte{}, rgerrors.Newf(rgerrors.ErrDosSizeExceeded, "block has %d txs, max %d", len(txs), TMax)
 	}
 
-	layer, err := atomicLayer(b.Txs)
-	if err != nil {
-		return [32]byte{}, err
+	layer := make([]*node.RGNode, 0, len(txs)+len(contractNodes))
+	if len(txs) > 0 {
+		txLayer, err := atomicLayer(txs)
+		if err != nil {
+			return [32]byte{}, err
+		}
+		layer = append(layer, txLayer...)
 	}
+	layer = append(layer, contractNodes...)
 
 	for len(layer) > 1 {
+		var err error
 		layer, err = coarsenLayer(layer)
 		if err != nil {
 			return [32]byte{}, err

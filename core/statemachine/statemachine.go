@@ -8,6 +8,7 @@ import (
 	"github.com/imattau/frg/core/gas"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/mint"
+	"github.com/imattau/frg/core/node"
 	"github.com/imattau/frg/core/staking"
 	"github.com/imattau/frg/core/tree"
 	"github.com/imattau/frg/core/tx"
@@ -50,7 +51,8 @@ func New(db *bolt.DB, l *ledger.Ledger, s *staking.Store) (*StateMachine, error)
 		if _, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode")); err != nil {
 			return err
 		}
-		return nil
+		_, err := btx.CreateBucketIfNotExists([]byte("contract_state"))
+		return err
 	}); err != nil {
 		return nil, err
 	}
@@ -110,21 +112,10 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 		}
 	}
 
-	// Build RG state root from the tx set (pure, no state writes).
-	rgBlock := &tree.Block{Height: b.Height, Txs: b.Txs}
-	stateRoot, err := rgBlock.BuildRoot()
-	if err != nil {
-		return nil, err
-	}
-
-	// Compute gas and mint amounts before the transaction (pure math).
+	// Compute base fee and mint amounts (pure math, no state).
 	baseFee, err := sm.currentBaseFee()
 	if err != nil {
 		return nil, err
-	}
-	gasBurned := new(big.Int)
-	for range b.Txs {
-		gasBurned.Add(gasBurned, baseFee)
 	}
 
 	totalSupply, totalStaked, err := sm.supplyAndStaked()
@@ -133,19 +124,32 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 	}
 	mintAmount := mint.MintPerBlock(totalSupply, totalStaked)
 
-	// Single atomic write: contracts, transfers, gas burn, miss-evidence, mint, meta.
+	var stateRoot [32]byte
+	transferGas := new(big.Int)
+	contractGas := uint64(0)
+
+	// Single atomic write: contracts, transfers, state root, gas, miss-evidence, mint, meta.
 	if err := sm.db.Update(func(btx *bolt.Tx) error {
+		touchedContracts := make(map[[32]byte]struct{})
+
 		// 0. Execute contract deployments and calls.
 		for _, t := range b.Txs {
 			switch t.Type {
 			case tx.TxTypeContractDeploy:
-				if _, err := contract.Deploy(btx, sm.ledger, t, b.Height); err != nil {
+				_, fuelUsed, err := contract.Deploy(btx, sm.ledger, t, b.Height)
+				if err != nil {
 					return err
 				}
+				contractGas += fuelUsed
+				addr := contract.ContractAddr(t.SenderPubKey, t.Nonce)
+				touchedContracts[addr] = struct{}{}
 			case tx.TxTypeContractCall:
-				if _, err := contract.Call(btx, sm.ledger, t, b.Height); err != nil {
+				_, fuelUsed, err := contract.Call(btx, sm.ledger, t, b.Height)
+				if err != nil {
 					return err
 				}
+				contractGas += fuelUsed
+				touchedContracts[t.ReceiverPubKey] = struct{}{}
 			}
 		}
 
@@ -158,16 +162,64 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 			}
 		}
 
-		// 2. Burn gas per tx.
+		// 2. Build contract state RG nodes from ALL contracts with persisted state.
+		contractNodes := make([]*node.RGNode, 0, len(touchedContracts))
+		for addr := range touchedContracts {
+			stateRoot := contract.LoadStateRoot(btx, addr)
+			balance, _ := sm.ledger.BalanceOf(addr)
+			bal := big.NewInt(0)
+			if balance != nil {
+				bal = new(big.Int).Set(balance)
+			}
+			sumSquares := new(big.Int).Mul(bal, bal)
+			contractNodes = append(contractNodes, &node.RGNode{
+				Scale:         1,
+				Volume:        new(big.Int).Set(bal),
+				Variance:      big.NewInt(0),
+				Sig:           node.SigAtomic,
+				Children:      [][32]byte{stateRoot},
+				SumValues:     new(big.Int).Set(bal),
+				SumSquares:    sumSquares,
+				Count:         1,
+				ContractCount: 1,
+			})
+		}
+
+		// 3. Build the RG state root from txs + contract state nodes.
+		root, err := tree.BuildTreeRoot(b.Txs, contractNodes)
+		if err != nil {
+			return err
+		}
+		stateRoot = root
+
+		// 4. Burn gas: transfer gas + contract gas.
 		for _, t := range b.Txs {
-			if baseFee.Sign() > 0 {
-				if err := sm.ledger.BurnTx(btx, t.SenderPubKey, baseFee); err != nil {
-					return err
+			if t.Type == tx.TxTypeTransfer || t.Type == tx.TxTypeContractDeploy || t.Type == tx.TxTypeContractCall {
+				if baseFee.Sign() > 0 {
+					if err := sm.ledger.BurnTx(btx, t.SenderPubKey, baseFee); err != nil {
+						return err
+					}
+					transferGas.Add(transferGas, baseFee)
 				}
 			}
 		}
 
-		// 3. Apply miss-evidence side effects.
+		// Charge contract compute gas: fuel / FuelUnitsPerGas * baseFee (floor).
+		if contractGas > 0 {
+			gasUnits := contractGas / contract.FuelUnitsPerGas
+			if gasUnits > 0 {
+				contractFee := new(big.Int).Mul(baseFee, new(big.Int).SetUint64(gasUnits))
+				for _, t := range b.Txs {
+					if t.Type == tx.TxTypeContractDeploy || t.Type == tx.TxTypeContractCall {
+						if err := sm.ledger.BurnTx(btx, t.SenderPubKey, contractFee); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+
+		// 5. Apply miss-evidence side effects.
 		for _, t := range b.Txs {
 			if t.Type == tx.TxTypeMissEvidence {
 				_, slashAmt, err := sm.staking.RecordMissTx(btx, t.MissedProposer)
@@ -183,14 +235,14 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 			}
 		}
 
-		// 4. Mint block reward to proposer.
+		// 6. Mint block reward to proposer.
 		if mintAmount.Sign() > 0 {
 			if err := sm.ledger.CreditTx(btx, b.ProposerPubKey, mintAmount); err != nil {
 				return err
 			}
 		}
 
-		// 5. Persist meta.
+		// 7. Persist meta.
 		mb := btx.Bucket(metaBucket)
 		heightBuf := make([]byte, 8)
 		binary.BigEndian.PutUint64(heightBuf, b.Height)
@@ -205,6 +257,14 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 		return mb.Put([]byte("baseFee"), nextFeeBuf)
 	}); err != nil {
 		return nil, err
+	}
+
+	// Compute total gas burned for result.
+	gasBurned := new(big.Int).Set(transferGas)
+	if contractGas > 0 {
+		gasUnits := contractGas / contract.FuelUnitsPerGas
+		contractFee := new(big.Int).Mul(baseFee, new(big.Int).SetUint64(gasUnits))
+		gasBurned.Add(gasBurned, contractFee)
 	}
 
 	return &Result{

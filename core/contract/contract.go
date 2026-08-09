@@ -11,6 +11,7 @@ import (
 
 var (
 	bytecodeBucket = []byte("contract_bytecode")
+	stateBucket    = []byte("contract_state")
 )
 
 func ContractAddr(deployerPubKey [32]byte, nonce uint64) [32]byte {
@@ -23,24 +24,24 @@ func ContractAddr(deployerPubKey [32]byte, nonce uint64) [32]byte {
 	return hash.Hash(state)
 }
 
-func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byte, error) {
+func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byte, uint64, error) {
 	contractAddr := ContractAddr(t.SenderPubKey, t.Nonce)
 
 	if len(t.WasmBytes) == 0 {
-		return [32]byte{}, fmt.Errorf("contract deploy requires wasm bytes")
+		return [32]byte{}, 0, fmt.Errorf("contract deploy requires wasm bytes")
 	}
 
 	if exists, _ := contractExists(btx, contractAddr); exists {
-		return [32]byte{}, fmt.Errorf("contract already deployed at %x", contractAddr)
+		return [32]byte{}, 0, fmt.Errorf("contract already deployed at %x", contractAddr)
 	}
 
 	if t.Value != nil && t.Value.Sign() > 0 {
 		if err := l.MoveTx(btx, t.SenderPubKey, contractAddr, t.Value); err != nil {
-			return [32]byte{}, fmt.Errorf("endow contract: %w", err)
+			return [32]byte{}, 0, fmt.Errorf("endow contract: %w", err)
 		}
 	}
 
-	state := NewStateStore()
+	state := loadState(btx, contractAddr)
 
 	cfg := &RuntimeConfig{
 		WasmBytes:   t.WasmBytes,
@@ -54,35 +55,37 @@ func Deploy(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]b
 	}
 	rt, err := NewRuntime(cfg)
 	if err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, 0, err
 	}
 
 	if _, err := rt.Call("init"); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, 0, err
 	}
 
 	if err := storeBytecode(btx, contractAddr, t.WasmBytes); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, 0, err
 	}
 
-	return state.StateRoot(), nil
+	saveState(btx, contractAddr, state)
+
+	return state.StateRoot(), rt.FuelConsumed(), nil
 }
 
-func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byte, error) {
+func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byte, uint64, error) {
 	contractAddr := t.ReceiverPubKey
 
 	wasmBytes, err := loadBytecode(btx, contractAddr)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("contract %x not found", contractAddr)
+		return [32]byte{}, 0, fmt.Errorf("contract %x not found", contractAddr)
 	}
 
 	if t.Value != nil && t.Value.Sign() > 0 {
 		if err := l.MoveTx(btx, t.SenderPubKey, contractAddr, t.Value); err != nil {
-			return [32]byte{}, fmt.Errorf("fund contract call: %w", err)
+			return [32]byte{}, 0, fmt.Errorf("fund contract call: %w", err)
 		}
 	}
 
-	state := NewStateStore()
+	state := loadState(btx, contractAddr)
 
 	cfg := &RuntimeConfig{
 		WasmBytes:   wasmBytes,
@@ -96,7 +99,7 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byt
 	}
 	rt, err := NewRuntime(cfg)
 	if err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, 0, err
 	}
 
 	funcName := "call"
@@ -105,17 +108,20 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64) ([32]byt
 	}
 
 	if _, err := rt.Call(funcName); err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, 0, err
 	}
 
-	return state.StateRoot(), nil
+	saveState(btx, contractAddr, state)
+
+	return state.StateRoot(), rt.FuelConsumed(), nil
 }
 
 func EnsureBuckets(btx *bolt.Tx) error {
 	if _, err := btx.CreateBucketIfNotExists(bytecodeBucket); err != nil {
 		return err
 	}
-	return nil
+	_, err := btx.CreateBucketIfNotExists(stateBucket)
+	return err
 }
 
 func storeBytecode(btx *bolt.Tx, addr [32]byte, wasm []byte) error {
@@ -130,6 +136,31 @@ func loadBytecode(btx *bolt.Tx, addr [32]byte) ([]byte, error) {
 	out := make([]byte, len(data))
 	copy(out, data)
 	return out, nil
+}
+
+func saveState(btx *bolt.Tx, addr [32]byte, s *StateStore) {
+	data := s.Serialize()
+	if data == nil {
+		data = []byte{}
+	}
+	_ = btx.Bucket(stateBucket).Put(addr[:], data)
+}
+
+func loadState(btx *bolt.Tx, addr [32]byte) *StateStore {
+	data := btx.Bucket(stateBucket).Get(addr[:])
+	if data == nil {
+		return NewStateStore()
+	}
+	return DeserializeState(data)
+}
+
+// LoadStateRoot computes the state root from persisted state without instantiating WASM.
+func LoadStateRoot(btx *bolt.Tx, addr [32]byte) [32]byte {
+	return loadState(btx, addr).StateRoot()
+}
+
+func IsContract(btx *bolt.Tx, addr [32]byte) bool {
+	return btx.Bucket(bytecodeBucket).Get(addr[:]) != nil
 }
 
 func contractExists(btx *bolt.Tx, addr [32]byte) (bool, error) {

@@ -11,12 +11,14 @@ import (
 )
 
 const maxFuel = 100_000_000_000
+const FuelUnitsPerGas = 1000
 
 type Runtime struct {
-	engine   *wasmtime.Engine
-	store    *wasmtime.Store
-	linker   *wasmtime.Linker
-	instance *wasmtime.Instance
+	engine      *wasmtime.Engine
+	store       *wasmtime.Store
+	linker      *wasmtime.Linker
+	instance    *wasmtime.Instance
+	initialFuel uint64
 }
 
 type RuntimeConfig struct {
@@ -34,7 +36,12 @@ type RuntimeConfig struct {
 func NewRuntime(cfg *RuntimeConfig) (*Runtime, error) {
 	engine := wasmtime.NewEngine()
 	store := wasmtime.NewStore(engine)
-	store.SetFuel(maxFuel)
+
+	fuelCap := cfg.GasLimit * FuelUnitsPerGas
+	if fuelCap == 0 {
+		fuelCap = maxFuel
+	}
+	store.SetFuel(fuelCap)
 
 	module, err := wasmtime.NewModule(store.Engine, cfg.WasmBytes)
 	if err != nil {
@@ -54,6 +61,11 @@ func NewRuntime(cfg *RuntimeConfig) (*Runtime, error) {
 		return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractNonDeterministic, ""), err)
 	}
 	rt.instance = instance
+
+	fuelAfterInit, err := store.GetFuel()
+	if err == nil {
+		rt.initialFuel = fuelAfterInit
+	}
 
 	return rt, nil
 }
@@ -224,4 +236,15 @@ func (r *Runtime) Call(functionName string) ([]byte, error) {
 	}
 
 	return nil, nil
+}
+
+func (r *Runtime) FuelConsumed() uint64 {
+	remaining, err := r.store.GetFuel()
+	if err != nil {
+		return 0
+	}
+	if r.initialFuel > remaining {
+		return r.initialFuel - remaining
+	}
+	return 0
 }
