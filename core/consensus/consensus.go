@@ -162,6 +162,11 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 	rs := NewRoundState(height + 1)
+	if raw, loadErr := e.sm.LoadConsensusState(); loadErr == nil && len(raw) > 0 {
+		if restored, decodeErr := decodeRoundState(raw, e.chainID); decodeErr == nil && restored.Height == height+1 {
+			rs = restored
+		}
+	}
 	e.setStatus(rs)
 
 	validators, stakes, err := e.staking.BondedAmounts()
@@ -178,10 +183,26 @@ func (e *Engine) Start(ctx context.Context) error {
 	precommitTimer := time.NewTimer(0)
 	precommitTimer.Stop()
 
-	// Enter propose: schedule delayed proposal broadcast for the proposer.
+	// Restore the active phase timers and schedule a proposal only when needed.
 	prevRoot := e.prevStateRoot()
 	proposerPK, _ := leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
-	if proposerPK == e.kp.PublicKey {
+	if rs.Phase == PhasePrevote {
+		proposeTimer.Stop()
+		prevoteTimer.Reset(e.timeouts.Prevote)
+	} else if rs.Phase == PhasePrecommit {
+		proposeTimer.Stop()
+		precommitTimer.Reset(e.timeouts.Precommit)
+	} else if rs.Phase == PhaseCommit {
+		proposeTimer.Stop()
+		blockHash, hasQuorum := e.quorumBlock(rs.Precommits, validators, stakes)
+		if hasQuorum && blockHash != [32]byte{} && e.commit(rs, blockHash) {
+			validators, stakes, err = e.staking.BondedAmounts()
+			if err != nil {
+				return err
+			}
+			e.startNextRound(rs, validators, stakes, proposeTimer)
+		}
+	} else if proposerPK == e.kp.PublicKey {
 		rsCopy := rs
 		pkCopy := proposerPK
 		rootCopy := prevRoot
@@ -235,6 +256,7 @@ func (e *Engine) Start(ctx context.Context) error {
 			if proposerPK == e.kp.PublicKey {
 				e.broadcastProposal(rs, prevRoot)
 			}
+			persistRoundState(e.sm, rs)
 		}
 	}
 }
@@ -265,11 +287,19 @@ func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
 	if err != nil {
 		return
 	}
+	if rs.Phase != PhasePropose {
+		return
+	}
+	rs.Proposal = p
+	rs.Phase = PhasePrevote
+	e.setStatus(rs)
+	persistRoundState(e.sm, rs)
 	data, err := SerializeProposal(p)
 	if err != nil {
 		return
 	}
 	_ = e.p2p.BroadcastBlockHeader(data)
+	e.broadcastPrevote(rs, p.BlockHashForChain(e.chainID))
 }
 
 func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stakes []*big.Int,
@@ -298,6 +328,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 			return
 		}
 		rs.Prevotes[v.ValidatorPK] = *v
+		persistRoundState(e.sm, rs)
 		if QuorumReached(rs.Prevotes, validators, stakes) && rs.Phase == PhasePrevote {
 			rs.Phase = PhasePrecommit
 			e.setStatus(rs)
@@ -318,6 +349,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 			return
 		}
 		rs.Precommits[v.ValidatorPK] = *v
+		persistRoundState(e.sm, rs)
 		if QuorumReached(rs.Precommits, validators, stakes) && rs.Phase == PhasePrecommit {
 			blockHash, hasQuorum := e.quorumBlock(rs.Precommits, validators, stakes)
 			if hasQuorum && blockHash != [32]byte{} {
@@ -374,6 +406,7 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
 		e.broadcastPrevote(rs, blockHash)
 	}
 	prevoteTimer.Reset(e.timeouts.Prevote)
+	persistRoundState(e.sm, rs)
 }
 
 func (e *Engine) onProposeTimeout(rs *RoundState, validators [][32]byte, prevoteTimer *time.Timer) {
@@ -384,6 +417,7 @@ func (e *Engine) onProposeTimeout(rs *RoundState, validators [][32]byte, prevote
 	e.setStatus(rs)
 	e.broadcastPrevote(rs, [32]byte{}) // nil prevote
 	prevoteTimer.Reset(e.timeouts.Prevote)
+	persistRoundState(e.sm, rs)
 }
 
 func (e *Engine) onPrevoteTimeout(rs *RoundState, validators [][32]byte, stakes []*big.Int, precommitTimer *time.Timer) {
@@ -394,6 +428,7 @@ func (e *Engine) onPrevoteTimeout(rs *RoundState, validators [][32]byte, stakes 
 	e.setStatus(rs)
 	e.broadcastPrecommit(rs, [32]byte{}) // nil precommit
 	precommitTimer.Reset(e.timeouts.Precommit)
+	persistRoundState(e.sm, rs)
 }
 
 func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) {
@@ -451,6 +486,7 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 	if err != nil {
 		return false
 	}
+	_ = e.sm.ClearConsensusState()
 	if e.proposer != nil {
 		e.proposer.OnCommit(rs.Height, rs.Proposal.Txs)
 	}
@@ -479,6 +515,7 @@ func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []
 			}
 		})
 	}
+	persistRoundState(e.sm, rs)
 }
 
 func (e *Engine) quorumBlock(votes map[[32]byte]Vote, validators [][32]byte, stakes []*big.Int) ([32]byte, bool) {

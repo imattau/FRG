@@ -19,6 +19,7 @@ import (
 var metaBucket = []byte("meta")
 var genesisAppliedKey = []byte("genesisApplied")
 var consensusVotePrefix = []byte("consensusVote/")
+var consensusStateKey = []byte("consensusState")
 
 // Block is the input to ApplyBlock.
 type Block struct {
@@ -138,6 +139,31 @@ func (sm *StateMachine) RecordConsensusVote(height uint64, round uint32, voteTyp
 		return nil
 	})
 	return accepted
+}
+
+// LoadConsensusState returns the last durable consensus snapshot.
+func (sm *StateMachine) LoadConsensusState() ([]byte, error) {
+	var state []byte
+	err := sm.db.View(func(btx *bolt.Tx) error {
+		v := btx.Bucket(metaBucket).Get(consensusStateKey)
+		state = append([]byte(nil), v...)
+		return nil
+	})
+	return state, err
+}
+
+// SaveConsensusState replaces the durable consensus snapshot.
+func (sm *StateMachine) SaveConsensusState(state []byte) error {
+	return sm.db.Update(func(btx *bolt.Tx) error {
+		return btx.Bucket(metaBucket).Put(consensusStateKey, state)
+	})
+}
+
+// ClearConsensusState removes a snapshot after a committed height advances.
+func (sm *StateMachine) ClearConsensusState() error {
+	return sm.db.Update(func(btx *bolt.Tx) error {
+		return btx.Bucket(metaBucket).Delete(consensusStateKey)
+	})
 }
 
 // ApplyBlock applies a mainnet-domain block to the state machine.
