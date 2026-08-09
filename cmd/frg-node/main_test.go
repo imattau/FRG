@@ -144,6 +144,16 @@ func TestRunNodeInitCreatesFirstRunFiles(t *testing.T) {
 			t.Fatalf("config.toml missing %q:\n%s", want, configText)
 		}
 	}
+	loaded, err := loadConfig(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ChainID != "frg-test-1" {
+		t.Fatalf("loaded chain ID = %q, want frg-test-1", loaded.ChainID)
+	}
+	if loaded.GRPC.TLSCertFile != "/var/lib/frg/tls/server.crt" {
+		t.Fatalf("loaded TLS cert = %q", loaded.GRPC.TLSCertFile)
+	}
 
 	envData, err := os.ReadFile(filepath.Join(dir, ".env"))
 	if err != nil {

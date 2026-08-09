@@ -563,6 +563,7 @@ func writeConfigFile(path string, cfg Config, force bool) error {
 		return err
 	}
 	var b strings.Builder
+	fmt.Fprintf(&b, "chain_id = %q\n\n", cfg.ChainID)
 	fmt.Fprintf(&b, "[node]\n")
 	fmt.Fprintf(&b, "keypair_path = %q\n", cfg.Node.KeypairPath)
 	fmt.Fprintf(&b, "db_path = %q\n", cfg.Node.DBPath)
@@ -592,8 +593,7 @@ func writeConfigFile(path string, cfg Config, force bool) error {
 	fmt.Fprintf(&b, "propose_delay_ms = %d\n", cfg.Consensus.ProposeDelayMS)
 	fmt.Fprintf(&b, "propose_timeout_ms = %d\n", cfg.Consensus.ProposeTimeoutMS)
 	fmt.Fprintf(&b, "prevote_timeout_ms = %d\n", cfg.Consensus.PrevoteTimeoutMS)
-	fmt.Fprintf(&b, "precommit_timeout_ms = %d\n\n", cfg.Consensus.PrecommitTimeoutMS)
-	fmt.Fprintf(&b, "chain_id = %q\n", cfg.ChainID)
+	fmt.Fprintf(&b, "precommit_timeout_ms = %d\n", cfg.Consensus.PrecommitTimeoutMS)
 	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 

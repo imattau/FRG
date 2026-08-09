@@ -22,6 +22,11 @@ PRECOMMIT_TIMEOUT_MS="${FRG_PRECOMMIT_TIMEOUT_MS:-3000}"
 
 mkdir -p "$DATA_DIR"
 
+if [ "$(id -u)" = "0" ]; then
+  chown -R frg:frg "$DATA_DIR"
+  exec gosu frg "$0" "$@"
+fi
+
 if [ "${1:-}" = "init" ]; then
   shift
   if [ "${FRG_ALLOW_BOOTSTRAP_GENESIS:-false}" = "true" ]; then
@@ -68,6 +73,8 @@ EOF
 
   {
     cat <<EOF
+chain_id = "$CHAIN_ID"
+
 [node]
 keypair_path = "$KEY_PATH"
 db_path = "$DB_PATH"
@@ -114,8 +121,6 @@ propose_delay_ms = $PROPOSE_DELAY_MS
 propose_timeout_ms = $PROPOSE_TIMEOUT_MS
 prevote_timeout_ms = $PREVOTE_TIMEOUT_MS
 precommit_timeout_ms = $PRECOMMIT_TIMEOUT_MS
-
-chain_id = "$CHAIN_ID"
 EOF
   } > "$CONFIG_PATH"
   echo "Generated $CONFIG_PATH"
