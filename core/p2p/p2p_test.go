@@ -121,3 +121,36 @@ func TestTxGossip(t *testing.T) {
 		t.Fatal("timed out waiting for tx gossip")
 	}
 }
+
+func TestBlockSync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	kp1, _ := keys.GenerateKeypair()
+	kp2, _ := keys.GenerateKeypair()
+	n1, err := p2p.New(ctx, kp1, p2p.Config{ListenAddr: "/ip4/127.0.0.1/tcp/0", ChainID: "sync-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n1.Close()
+	n2, err := p2p.New(ctx, kp2, p2p.Config{ListenAddr: "/ip4/127.0.0.1/tcp/0", ChainID: "sync-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n2.Close()
+	n1.SetBlockProvider(func(height uint64) ([]byte, error) {
+		if height > 2 {
+			return nil, nil
+		}
+		return []byte{byte(height), 0xaa}, nil
+	})
+	if err := n2.Connect(ctx, n1.Addrs()); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := n2.SyncBlocks(ctx, n1.ID(), 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 2 || blocks[0][0] != 1 || blocks[1][0] != 2 {
+		t.Fatalf("unexpected synced blocks: %v", blocks)
+	}
+}

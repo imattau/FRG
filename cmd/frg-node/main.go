@@ -151,6 +151,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("Init P2P: %v", err)
 		}
+		p2pNode.SetBlockProvider(func(height uint64) ([]byte, error) {
+			block, err := sm.BlockAt(height)
+			if err != nil || block == nil {
+				return nil, err
+			}
+			return statemachine.SerializeBlock(block)
+		})
+		catchupCtx, catchupCancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := catchUpCommittedBlocks(catchupCtx, p2pNode, sm, cfg.ChainID); err != nil {
+			catchupCancel()
+			log.Fatalf("Catch up committed blocks: %v", err)
+		}
+		catchupCancel()
 		defer p2pNode.Close()
 		runtime.p2p = p2pNode
 	} else {
@@ -418,6 +431,62 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 	}()
 
 	return server, ln.Addr().String(), nil
+}
+
+func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachine.StateMachine, chainID string) error {
+	for {
+		current, err := sm.CurrentHeight()
+		if err != nil {
+			return err
+		}
+		if current == ^uint64(0) {
+			return nil
+		}
+		peers := node.Peers()
+		if len(peers) == 0 {
+			return nil
+		}
+		from := current + 1
+		to := from + 1023
+		if to < from {
+			to = ^uint64(0)
+		}
+		advanced := false
+		for _, id := range peers {
+			blocks, syncErr := node.SyncBlocks(ctx, id, from, to)
+			if syncErr != nil || len(blocks) == 0 {
+				continue
+			}
+			decoded := make([]*statemachine.Block, 0, len(blocks))
+			valid := true
+			for i, raw := range blocks {
+				block, decodeErr := statemachine.DeserializeBlock(raw)
+				if decodeErr != nil || block.Height != from+uint64(i) {
+					valid = false
+					break
+				}
+				decoded = append(decoded, block)
+			}
+			if !valid {
+				continue
+			}
+			for _, block := range decoded {
+				if _, applyErr := sm.ApplyBlockForChain(block, chainID); applyErr != nil {
+					return fmt.Errorf("apply synced block %d: %w", block.Height, applyErr)
+				}
+			}
+			advanced = true
+			break
+		}
+		if !advanced {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
 }
 
 func requiresGRPCTLS(listenAddr string) bool {

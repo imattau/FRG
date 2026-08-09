@@ -64,6 +64,16 @@ func blockKey(height uint64) []byte {
 	return key
 }
 
+// SerializeBlock returns the canonical persisted representation of a block.
+func SerializeBlock(block *Block) ([]byte, error) {
+	return serializeBlock(block)
+}
+
+// DeserializeBlock parses the canonical persisted representation of a block.
+func DeserializeBlock(data []byte) (*Block, error) {
+	return deserializeBlock(data)
+}
+
 func serializeBlock(block *Block) ([]byte, error) {
 	var batch []byte
 	var err error

@@ -9,6 +9,7 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
@@ -52,26 +53,28 @@ func (c *Config) dhtPrefix() string  { return "/frg/" + c.chainID() + "/kad/v1" 
 
 // Node is the FRG P2P node.
 type Node struct {
-	cfg        Config
-	host       host.Host
-	dht        *dht.IpfsDHT
-	ps         *pubsub.PubSub
-	txTopic    *pubsub.Topic
-	batchTopic *pubsub.Topic
-	blockTopic *pubsub.Topic
-	voteTopic  *pubsub.Topic
-	txSub      *pubsub.Subscription
-	batchSub   *pubsub.Subscription
-	blockSub   *pubsub.Subscription
-	voteSub    *pubsub.Subscription
-	txCh       chan *tx.Tx
-	blockCh    chan []byte
-	voteCh     chan []byte
-	cancel     context.CancelFunc
+	cfg           Config
+	host          host.Host
+	dht           *dht.IpfsDHT
+	ps            *pubsub.PubSub
+	txTopic       *pubsub.Topic
+	batchTopic    *pubsub.Topic
+	blockTopic    *pubsub.Topic
+	voteTopic     *pubsub.Topic
+	txSub         *pubsub.Subscription
+	batchSub      *pubsub.Subscription
+	blockSub      *pubsub.Subscription
+	voteSub       *pubsub.Subscription
+	txCh          chan *tx.Tx
+	blockCh       chan []byte
+	voteCh        chan []byte
+	cancel        context.CancelFunc
+	blockProvider BlockProvider
 }
 
 // New creates and starts a P2P node using the given Ed25519 keypair.
 func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
+	cfg.ChainID = cfg.chainID()
 	privKey, err := crypto.UnmarshalEd25519PrivateKey(kp.PrivateKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("p2p key: %w", err)
@@ -171,6 +174,9 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		voteCh:     make(chan []byte, 1024),
 		cancel:     cancel,
 	}
+	h.SetStreamHandler(blockSyncProtocol(cfg.chainID()), func(stream network.Stream) {
+		n.handleBlockSync(stream)
+	})
 
 	go n.readTxs(innerCtx)
 	go n.readBatches(innerCtx)
@@ -287,6 +293,23 @@ func (n *Node) PeerCount() int {
 		return 0
 	}
 	return len(n.host.Network().Peers())
+}
+
+// ID returns the authenticated libp2p identity of the node.
+func (n *Node) ID() peer.ID {
+	if n == nil || n.host == nil {
+		return ""
+	}
+	return n.host.ID()
+}
+
+// Peers returns a snapshot of currently connected peer identities.
+func (n *Node) Peers() []peer.ID {
+	if n == nil || n.host == nil {
+		return nil
+	}
+	connected := n.host.Network().Peers()
+	return append([]peer.ID(nil), connected...)
 }
 
 // Addrs returns the multiaddrs of the node with peer ID.
