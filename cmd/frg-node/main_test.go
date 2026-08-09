@@ -34,6 +34,24 @@ func TestLoadConfigUsesBuiltInDefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsUnsafeProductionSettings(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.ChainID = "bad chain"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("invalid chain ID was accepted")
+	}
+	cfg = defaultConfig()
+	cfg.GRPC.Listen = "0.0.0.0:50051"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("remote gRPC without mTLS was accepted")
+	}
+	cfg = defaultConfig()
+	cfg.Metrics.Listen = "0.0.0.0:9090"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("non-loopback metrics listener was accepted")
+	}
+}
+
 func TestEnsureGenesisCreatesBootstrapFile(t *testing.T) {
 	dir := t.TempDir()
 	genesisPath := filepath.Join(dir, "genesis.json")

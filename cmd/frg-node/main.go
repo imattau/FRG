@@ -243,6 +243,9 @@ func loadConfig(path string) (Config, error) {
 		if os.IsNotExist(err) {
 			log.Printf("Config %s not found; using built-in defaults", path)
 			normalizeConfig(&cfg)
+			if err := validateConfig(cfg); err != nil {
+				return Config{}, err
+			}
 			return cfg, nil
 		}
 		return Config{}, fmt.Errorf("stat config: %w", err)
@@ -252,6 +255,9 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	normalizeConfig(&cfg)
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -316,8 +322,36 @@ func normalizeConfig(cfg *Config) {
 	}
 }
 
+func validateConfig(cfg Config) error {
+	if cfg.ChainID == "" || len(cfg.ChainID) > 64 {
+		return fmt.Errorf("chain_id must be 1-64 characters")
+	}
+	for _, r := range cfg.ChainID {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return fmt.Errorf("chain_id contains unsupported character %q", r)
+		}
+	}
+	if cfg.Node.KeypairPath == cfg.Node.DBPath || cfg.Node.KeypairPath == cfg.Node.GenesisPath || cfg.Node.DBPath == cfg.Node.GenesisPath {
+		return fmt.Errorf("node keypair, database, and genesis paths must be distinct")
+	}
+	if cfg.Consensus.ProposeDelayMS >= cfg.Consensus.ProposeTimeoutMS || cfg.Consensus.ProposeTimeoutMS <= 0 || cfg.Consensus.PrevoteTimeoutMS <= 0 || cfg.Consensus.PrecommitTimeoutMS <= 0 {
+		return fmt.Errorf("consensus timeouts are invalid")
+	}
+	if requiresGRPCTLS(cfg.GRPC.Listen) && (cfg.GRPC.TLSCertFile == "" || cfg.GRPC.TLSKeyFile == "" || cfg.GRPC.TLSClientCAFile == "") {
+		return fmt.Errorf("non-loopback gRPC listeners require mutual TLS")
+	}
+	if cfg.Metrics.Listen != "" && !isLoopbackTCPAddress(cfg.Metrics.Listen) {
+		return fmt.Errorf("metrics listener must be loopback")
+	}
+	if _, err := newRPCAuthorizer(cfg.GRPC.ClientRoles, requiresGRPCTLS(cfg.GRPC.Listen) || len(cfg.GRPC.ClientRoles) > 0); err != nil {
+		return err
+	}
+	return nil
+}
+
 func loadOrGenerateKeypair(path string) (*keys.Keypair, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		kp, err := keys.GenerateKeypair()
 		if err != nil {
 			return nil, err
@@ -330,6 +364,15 @@ func loadOrGenerateKeypair(path string) (*keys.Keypair, error) {
 			return nil, err
 		}
 		return kp, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("keypair path is not a regular file")
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		return nil, fmt.Errorf("keypair file permissions are too broad: %04o", info.Mode().Perm())
 	}
 
 	data, err := os.ReadFile(path)

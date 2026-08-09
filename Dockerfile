@@ -11,5 +11,11 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /frg-node ./cmd/frg-node
 
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates tzdata
+RUN addgroup -S frg && adduser -S -G frg frg \
+    && mkdir -p /var/lib/frg \
+    && chown -R frg:frg /var/lib/frg
 COPY --from=builder /frg-node /usr/local/bin/frg-node
+WORKDIR /var/lib/frg
+USER frg
+EXPOSE 7777 50051 9090
 ENTRYPOINT ["frg-node"]
