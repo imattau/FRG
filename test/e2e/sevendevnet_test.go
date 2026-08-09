@@ -122,19 +122,44 @@ func TestSevenNodeDevnetContracts(t *testing.T) {
 	}
 	t.Log("Block 3 committed — contract called")
 
-	// Verify all 7 nodes agree on state root
-	var ref [32]byte
-	for i, n := range nodes {
-		r, _ := n.sm.CurrentStateRoot()
-		if i == 0 {
-			ref = r
-		} else if r != ref {
-			t.Errorf("node %d state root mismatch: %x vs %x", i, r, ref)
-		}
-		h, _ := n.sm.CurrentHeight()
-		if h < 3 {
-			t.Errorf("node %d stuck at height %d", i, h)
-		}
+	ref, ok := waitForStateRootAgreement(t, nodes, 3, 5*time.Second)
+	if !ok {
+		t.Fatal("nodes did not converge on state root")
 	}
 	t.Logf("All 7 nodes agree: height>=3, root=%x", ref)
+}
+
+func waitForStateRootAgreement(t *testing.T, nodes []*nodeStack, minHeight uint64, timeout time.Duration) ([32]byte, bool) {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	var lastRef [32]byte
+	for {
+		select {
+		case <-deadline:
+			for i, n := range nodes {
+				h, _ := n.sm.CurrentHeight()
+				r, _ := n.sm.CurrentStateRoot()
+				t.Logf("node %d height=%d root=%x", i, h, r)
+			}
+			return lastRef, false
+		case <-ticker.C:
+			all := true
+			for i, n := range nodes {
+				h, _ := n.sm.CurrentHeight()
+				r, _ := n.sm.CurrentStateRoot()
+				if i == 0 {
+					lastRef = r
+				}
+				if h < minHeight || r != lastRef {
+					all = false
+					break
+				}
+			}
+			if all {
+				return lastRef, true
+			}
+		}
+	}
 }
