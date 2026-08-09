@@ -19,6 +19,12 @@ type Ledger struct {
 	db *bolt.DB
 }
 
+// Update executes fn in the ledger's shared database transaction.
+// It is intended for atomic protocol initialization and state transitions.
+func (l *Ledger) Update(fn func(*bolt.Tx) error) error {
+	return l.db.Update(fn)
+}
+
 // New creates a Ledger using an existing shared *bolt.DB.
 // The caller owns the DB lifecycle.
 func New(db *bolt.DB) (*Ledger, error) {

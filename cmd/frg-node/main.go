@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -29,6 +30,7 @@ import (
 	frgpb "github.com/imattau/frg/proto"
 	bolt "go.etcd.io/bbolt"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -65,7 +67,9 @@ type P2PConfig struct {
 }
 
 type GRPCConfig struct {
-	Listen string `toml:"listen"`
+	Listen      string `toml:"listen"`
+	TLSCertFile string `toml:"tls_cert_file"`
+	TLSKeyFile  string `toml:"tls_key_file"`
 }
 
 type ConsensusConfig struct {
@@ -120,6 +124,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Load genesis: %v", err)
 	}
+	if g.ChainID != "" && g.ChainID != cfg.ChainID {
+		log.Fatalf("genesis chain ID %q does not match configured chain ID %q", g.ChainID, cfg.ChainID)
+	}
 
 	if err := genesis.Apply(sm, l, s, g); err != nil {
 		log.Fatalf("Apply genesis: %v", err)
@@ -146,7 +153,7 @@ func main() {
 		log.Printf("grpc-only mode enabled; skipping P2P/blockloop startup")
 	}
 
-	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, runtime)
+	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, runtime)
 	if err != nil {
 		log.Fatalf("Init gRPC: %v", err)
 	}
@@ -349,13 +356,33 @@ func ensureParentDir(path string) error {
 	return nil
 }
 
-func startGRPCServer(listenAddr string, node nodeRuntimeAPI) (*grpc.Server, string, error) {
+func startGRPCServer(listenAddr, certFile, keyFile string, node nodeRuntimeAPI) (*grpc.Server, string, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, "", fmt.Errorf("listen %s: %w", listenAddr, err)
 	}
 
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(8 << 20))
+	if (certFile == "") != (keyFile == "") {
+		_ = ln.Close()
+		return nil, "", fmt.Errorf("TLS certificate and key must be configured together")
+	}
+	if requiresGRPCTLS(listenAddr) && (certFile == "" || keyFile == "") {
+		_ = ln.Close()
+		return nil, "", fmt.Errorf("non-loopback gRPC listeners require TLS")
+	}
+	serverOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(8 << 20)}
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			_ = ln.Close()
+			return nil, "", fmt.Errorf("load gRPC TLS certificate: %w", err)
+		}
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(&tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			Certificates: []tls.Certificate{cert},
+		})))
+	}
+	server := grpc.NewServer(serverOpts...)
 	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node})
 
 	go func() {
@@ -365,6 +392,18 @@ func startGRPCServer(listenAddr string, node nodeRuntimeAPI) (*grpc.Server, stri
 	}()
 
 	return server, ln.Addr().String(), nil
+}
+
+func requiresGRPCTLS(listenAddr string) bool {
+	host, _, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return true
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }
 
 type nodeRuntimeAPI interface {
@@ -385,14 +424,14 @@ type nodeRuntime struct {
 
 func (n *nodeRuntime) BroadcastTx(t *tx.Tx) error {
 	if n.p2p == nil {
-		return nil
+		return fmt.Errorf("transaction submission unavailable in grpc-only mode")
 	}
 	return n.p2p.BroadcastTx(t)
 }
 
 func (n *nodeRuntime) BroadcastBatch(txs []*tx.Tx) error {
 	if n.p2p == nil {
-		return nil
+		return fmt.Errorf("transaction submission unavailable in grpc-only mode")
 	}
 	return n.p2p.BroadcastBatch(txs)
 }

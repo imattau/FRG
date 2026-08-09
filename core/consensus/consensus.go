@@ -104,6 +104,7 @@ type Engine struct {
 	proposer Proposer
 	timeouts TimeoutConfig
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	mu       sync.RWMutex
 	status   EngineStatus
 }
@@ -189,14 +190,20 @@ func (e *Engine) Start(ctx context.Context) error {
 		case <-e.stopCh:
 			return nil
 
-		case rawVote := <-voteSub:
+		case rawVote, ok := <-voteSub:
+			if !ok {
+				return nil
+			}
 			v, err := DeserializeVote(rawVote)
 			if err != nil {
 				continue
 			}
 			e.handleVote(rs, v, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 
-		case rawProposal := <-proposalSub:
+		case rawProposal, ok := <-proposalSub:
+			if !ok {
+				return nil
+			}
 			p := e.parseProposal(rawProposal)
 			if p == nil {
 				continue
@@ -224,7 +231,7 @@ func (e *Engine) Start(ctx context.Context) error {
 
 // Stop signals the engine to halt.
 func (e *Engine) Stop() {
-	close(e.stopCh)
+	e.stopOnce.Do(func() { close(e.stopCh) })
 }
 
 func (e *Engine) prevStateRoot() [32]byte {
@@ -264,6 +271,16 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 	if !VerifyVote(v) {
 		return
 	}
+	validator := false
+	for _, pk := range validators {
+		if pk == v.ValidatorPK {
+			validator = true
+			break
+		}
+	}
+	if !validator {
+		return
+	}
 
 	switch v.Type {
 	case VotePrevote:
@@ -297,8 +314,9 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 				precommitTimer.Stop()
 				rs.Phase = PhaseCommit
 				e.setStatus(rs)
-				e.commit(rs, blockHash)
-				e.startNextRound(rs, validators, stakes, proposeTimer)
+				if e.commit(rs, blockHash) {
+					e.startNextRound(rs, validators, stakes, proposeTimer)
+				}
 			}
 		}
 	}
@@ -394,9 +412,9 @@ func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
 	_ = e.p2p.BroadcastVote(data)
 }
 
-func (e *Engine) commit(rs *RoundState, blockHash [32]byte) {
+func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 	if rs.Proposal == nil || rs.Proposal.BlockHash() != blockHash {
-		return
+		return false
 	}
 	b := &statemachine.Block{
 		Height:         rs.Height,
@@ -405,11 +423,12 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) {
 	}
 	_, err := e.sm.ApplyBlock(b)
 	if err != nil {
-		return
+		return false
 	}
 	if e.proposer != nil {
 		e.proposer.OnCommit(rs.Height, rs.Proposal.Txs)
 	}
+	return true
 }
 
 func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer *time.Timer) {

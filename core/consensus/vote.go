@@ -76,6 +76,9 @@ func VoteSignBytes(v *Vote) []byte {
 
 // VerifyVote checks the Ed25519 signature of the vote.
 func VerifyVote(v *Vote) bool {
+	if v == nil || (v.Type != VotePrevote && v.Type != VotePrecommit) {
+		return false
+	}
 	body := VoteSignBytes(v)
 	return keys.Verify(v.ValidatorPK, body, v.Sig)
 }
@@ -240,11 +243,45 @@ type AttestationSet struct {
 }
 
 // VerifyAttestation checks that the attestation set is valid.
-func VerifyAttestation(as *AttestationSet, validators [][32]byte, totalStake uint64) error {
-	if len(as.Votes) == 0 {
+func VerifyAttestation(as *AttestationSet, validators [][32]byte, stakes []*big.Int) error {
+	if as == nil || len(as.Votes) == 0 {
 		return errors.New("empty attestation set")
 	}
-	// Real implementation would verify each vote and sum stake.
+	if len(validators) != len(stakes) {
+		return errors.New("validator and stake sets are misaligned")
+	}
+	validatorSet := make(map[[32]byte]struct{}, len(validators))
+	stakeMap := make(map[[32]byte]*big.Int, len(validators))
+	totalStake := new(big.Int)
+	for i, pk := range validators {
+		validatorSet[pk] = struct{}{}
+		if stakes[i] == nil || stakes[i].Sign() < 0 {
+			return errors.New("invalid validator stake")
+		}
+		stakeMap[pk] = stakes[i]
+		totalStake.Add(totalStake, stakes[i])
+	}
+	seen := make(map[[32]byte]struct{}, len(as.Votes))
+	votedStake := new(big.Int)
+	for _, vote := range as.Votes {
+		if vote.Type != VotePrecommit || vote.Height != as.Height || vote.Round != as.Round || vote.BlockHash != as.BlockHash {
+			return errors.New("attestation vote context mismatch")
+		}
+		if _, ok := validatorSet[vote.ValidatorPK]; !ok {
+			return errors.New("attestation contains non-validator vote")
+		}
+		if _, dup := seen[vote.ValidatorPK]; dup {
+			return errors.New("attestation contains duplicate validator vote")
+		}
+		if !VerifyVote(&vote) {
+			return errors.New("attestation contains invalid vote signature")
+		}
+		seen[vote.ValidatorPK] = struct{}{}
+		votedStake.Add(votedStake, stakeMap[vote.ValidatorPK])
+	}
+	if totalStake.Sign() == 0 || new(big.Int).Mul(votedStake, big.NewInt(3)).Cmp(new(big.Int).Mul(totalStake, big.NewInt(2))) <= 0 {
+		return errors.New("attestation does not reach quorum")
+	}
 	return nil
 }
 

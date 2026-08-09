@@ -99,14 +99,31 @@ func (s *Store) Bond(validator [32]byte, amount *big.Int, currentBlock uint64) e
 	if err := s.ledger.Move(validator, escrow, amount); err != nil {
 		return err
 	}
-
 	return s.db.Update(func(btx *bolt.Tx) error {
 		return putRecord(btx.Bucket(validatorsBucket), validator, record{
-			State:            stateBonded,
-			BondedAmount:     new(big.Int).Set(amount),
-			BondedAtBlock:    currentBlock,
-			UnbondingAtBlock: 0,
+			State:         stateBonded,
+			BondedAmount:  new(big.Int).Set(amount),
+			BondedAtBlock: currentBlock,
 		})
+	})
+}
+
+// BondTx moves funds into escrow and records a validator bond atomically.
+func (s *Store) BondTx(btx *bolt.Tx, validator [32]byte, amount *big.Int, currentBlock uint64) error {
+	if amount == nil || amount.Cmp(minBondAmount) < 0 {
+		return rgerrors.New(rgerrors.ErrBondBelowMinimum, "bond amount below minimum")
+	}
+	if getRecord(btx.Bucket(validatorsBucket), validator) != nil {
+		return rgerrors.New(rgerrors.ErrAlreadyBonded, "validator already bonded")
+	}
+	escrow := escrowAccount(validator)
+	if err := s.ledger.MoveTx(btx, validator, escrow, amount); err != nil {
+		return err
+	}
+	return putRecord(btx.Bucket(validatorsBucket), validator, record{
+		State:         stateBonded,
+		BondedAmount:  new(big.Int).Set(amount),
+		BondedAtBlock: currentBlock,
 	})
 }
 

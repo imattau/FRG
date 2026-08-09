@@ -17,6 +17,7 @@ import (
 )
 
 var metaBucket = []byte("meta")
+var genesisAppliedKey = []byte("genesisApplied")
 
 // Block is the input to ApplyBlock.
 type Block struct {
@@ -91,6 +92,27 @@ func (sm *StateMachine) CurrentStateRoot() ([32]byte, error) {
 		return nil
 	})
 	return root, err
+}
+
+// GenesisApplied reports whether immutable genesis initialization completed.
+func (sm *StateMachine) GenesisApplied() (bool, error) {
+	var applied bool
+	err := sm.db.View(func(btx *bolt.Tx) error {
+		v := btx.Bucket(metaBucket).Get(genesisAppliedKey)
+		applied = len(v) == 1 && v[0] == 1
+		return nil
+	})
+	return applied, err
+}
+
+// MarkGenesisAppliedTx records completed genesis initialization atomically.
+func (sm *StateMachine) MarkGenesisAppliedTx(btx *bolt.Tx) error {
+	return btx.Bucket(metaBucket).Put(genesisAppliedKey, []byte{1})
+}
+
+// Update executes fn in the state machine's shared database transaction.
+func (sm *StateMachine) Update(fn func(*bolt.Tx) error) error {
+	return sm.db.Update(fn)
 }
 
 // ApplyBlock applies b to the state machine. All writes are atomic: any error
