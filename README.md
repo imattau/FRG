@@ -71,6 +71,7 @@ client/      — offline tx queue, gRPC transport
 - At 50% staked: zero emission
 - Initial supply: 400,000,000 FRG
 - Blocks per year: 5,256,000
+- Per-block mint rewards are split across bonded validators and credited to claimable validator reward accounts.
 
 ---
 

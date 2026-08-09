@@ -9,8 +9,11 @@ import (
 
 	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
+	"github.com/imattau/frg/core/gas"
 	"github.com/imattau/frg/core/keys"
+	"github.com/imattau/frg/core/leader"
 	"github.com/imattau/frg/core/ledger"
+	"github.com/imattau/frg/core/mint"
 	"github.com/imattau/frg/core/node"
 	"github.com/imattau/frg/core/staking"
 	"github.com/imattau/frg/core/statemachine"
@@ -39,6 +42,15 @@ func openSM(t *testing.T) (*statemachine.StateMachine, *bolt.DB) {
 		t.Fatal(err)
 	}
 	return sm, db
+}
+
+func setTotalSupply(t *testing.T, sm *statemachine.StateMachine, total *big.Int) {
+	t.Helper()
+	if err := sm.Update(func(btx *bolt.Tx) error {
+		return sm.SetTotalSupplyTx(btx, total)
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestApplyEmptyBlock(t *testing.T) {
@@ -199,6 +211,7 @@ func TestApplySingleTransfer(t *testing.T) {
 	if err := l.Seed(senderKP.PublicKey, initial); err != nil {
 		t.Fatal(err)
 	}
+	setTotalSupply(t, sm, initial)
 
 	var proposer [32]byte
 	proposer[0] = 2
@@ -244,6 +257,264 @@ func TestApplyBlockHeightSequence(t *testing.T) {
 	}
 }
 
+func TestApplyBlockMintsSplitRewardsToClaimableAccounts(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+
+	totalSupply := big.NewInt(1_000_000_000_000)
+	halfSupply := new(big.Int).Div(totalSupply, big.NewInt(2))
+	if err := l.Seed(kpA.PublicKey, new(big.Int).Set(halfSupply)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(kpB.PublicKey, new(big.Int).Set(halfSupply)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, totalSupply)
+	if err := s.Bond(kpA.PublicKey, big.NewInt(1000), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Bond(kpB.PublicKey, big.NewInt(1000), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sm.ApplyBlock(&statemachine.Block{Height: 1, ProposerPubKey: kpA.PublicKey})
+	if err != nil {
+		t.Fatalf("ApplyBlock: %v", err)
+	}
+	wantMint := mint.MintPerBlock(totalSupply, big.NewInt(2000))
+	if result.MintAmount.Cmp(wantMint) != 0 {
+		t.Fatalf("MintAmount = %v, want %v", result.MintAmount, wantMint)
+	}
+	shares := mint.SplitReward(wantMint, 2)
+	claimA, _ := gas.Claimable(l, kpA.PublicKey)
+	claimB, _ := gas.Claimable(l, kpB.PublicKey)
+	if claimA.Cmp(shares[0]) != 0 {
+		t.Fatalf("validator A claimable = %v, want %v", claimA, shares[0])
+	}
+	if claimB.Cmp(shares[1]) != 0 {
+		t.Fatalf("validator B claimable = %v, want %v", claimB, shares[1])
+	}
+	supplyAfter, tracked, err := sm.CurrentTotalSupply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked {
+		t.Fatal("total supply is not tracked")
+	}
+	wantSupply := new(big.Int).Add(totalSupply, wantMint)
+	if supplyAfter.Cmp(wantSupply) != 0 {
+		t.Fatalf("total supply = %v, want %v", supplyAfter, wantSupply)
+	}
+	proposerBal, _ := l.BalanceOf(kpA.PublicKey)
+	if proposerBal.Cmp(new(big.Int).Sub(halfSupply, big.NewInt(1000))) != 0 {
+		t.Fatalf("proposer direct balance changed by mint: %v", proposerBal)
+	}
+}
+
+func TestApplyBlockMintsNothingAtTargetStaking(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	treasury, _ := keys.GenerateKeypair()
+
+	totalSupply := big.NewInt(1_000_000_000_000)
+	stakeEach := new(big.Int).Div(totalSupply, big.NewInt(4))
+	if err := l.Seed(kpA.PublicKey, new(big.Int).Set(stakeEach)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(kpB.PublicKey, new(big.Int).Set(stakeEach)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(treasury.PublicKey, new(big.Int).Div(totalSupply, big.NewInt(2))); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, totalSupply)
+	if err := s.Bond(kpA.PublicKey, new(big.Int).Set(stakeEach), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Bond(kpB.PublicKey, new(big.Int).Set(stakeEach), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sm.ApplyBlock(&statemachine.Block{Height: 1, ProposerPubKey: kpA.PublicKey})
+	if err != nil {
+		t.Fatalf("ApplyBlock: %v", err)
+	}
+	if result.MintAmount.Sign() != 0 {
+		t.Fatalf("MintAmount = %v, want 0", result.MintAmount)
+	}
+	supplyAfter, tracked, err := sm.CurrentTotalSupply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked {
+		t.Fatal("total supply is not tracked")
+	}
+	if supplyAfter.Cmp(totalSupply) != 0 {
+		t.Fatalf("total supply = %v, want %v", supplyAfter, totalSupply)
+	}
+	claimA, _ := gas.Claimable(l, kpA.PublicKey)
+	claimB, _ := gas.Claimable(l, kpB.PublicKey)
+	if claimA.Sign() != 0 || claimB.Sign() != 0 {
+		t.Fatalf("claimable rewards should be zero, got %v and %v", claimA, claimB)
+	}
+}
+
+func makeMissEvidenceTx(t *testing.T, reporter *keys.Keypair, missed [32]byte, height uint64, skipIndex uint32, nonce uint64) *tx.Tx {
+	t.Helper()
+	tr := &tx.Tx{
+		Type:           tx.TxTypeMissEvidence,
+		Sender:         "reporter",
+		Receiver:       "missed",
+		Value:          big.NewInt(0),
+		Nonce:          nonce,
+		SenderPubKey:   reporter.PublicKey,
+		ReceiverPubKey: missed,
+		MissedHeight:   height,
+		MissedProposer: missed,
+		SkipIndex:      skipIndex,
+	}
+	sig, err := tr.SignSender(reporter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.SenderSig = sig
+	return tr
+}
+
+func TestApplyBlockRejectsForgedMissEvidence(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	totalSupply := big.NewInt(20_000)
+	for _, kp := range []*keys.Keypair{kpA, kpB} {
+		if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setTotalSupply(t, sm, totalSupply)
+	validators, _, err := s.BondedAmounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prevRoot [32]byte
+	expectedReporter, err := leader.SkipProposer(prevRoot, 1, validators, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporterKP := kpA
+	if expectedReporter == kpB.PublicKey {
+		reporterKP = kpB
+	}
+
+	tr := makeMissEvidenceTx(t, reporterKP, reporterKP.PublicKey, 1, 0, 1)
+	_, err = sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{tr}, ProposerPubKey: reporterKP.PublicKey})
+	if err == nil {
+		t.Fatal("forged miss evidence was accepted")
+	}
+	if count, _ := s.MissCountOf(reporterKP.PublicKey); count != 0 {
+		t.Fatalf("forged miss evidence changed miss count to %d", count)
+	}
+}
+
+func TestApplyBlockAcceptsScheduledMissEvidence(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	totalSupply := big.NewInt(20_000)
+	for _, kp := range []*keys.Keypair{kpA, kpB} {
+		if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setTotalSupply(t, sm, totalSupply)
+	validators, _, err := s.BondedAmounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prevRoot [32]byte
+	missed, err := leader.SkipProposer(prevRoot, 1, validators, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter, err := leader.SkipProposer(prevRoot, 1, validators, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporterKP := kpA
+	if reporter == kpB.PublicKey {
+		reporterKP = kpB
+	}
+
+	tr := makeMissEvidenceTx(t, reporterKP, missed, 1, 0, 1)
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{tr}, ProposerPubKey: reporter}); err != nil {
+		t.Fatalf("scheduled miss evidence rejected: %v", err)
+	}
+	if count, _ := s.MissCountOf(missed); count != 1 {
+		t.Fatalf("miss count = %d, want 1", count)
+	}
+}
+
+func TestApplyBlockRejectsDuplicateMissEvidence(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kpA, _ := keys.GenerateKeypair()
+	kpB, _ := keys.GenerateKeypair()
+	totalSupply := big.NewInt(20_000)
+	for _, kp := range []*keys.Keypair{kpA, kpB} {
+		if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setTotalSupply(t, sm, totalSupply)
+	validators, _, err := s.BondedAmounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prevRoot [32]byte
+	missed, err := leader.SkipProposer(prevRoot, 1, validators, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter, err := leader.SkipProposer(prevRoot, 1, validators, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporterKP := kpA
+	if reporter == kpB.PublicKey {
+		reporterKP = kpB
+	}
+
+	tx1 := makeMissEvidenceTx(t, reporterKP, missed, 1, 0, 1)
+	tx2 := makeMissEvidenceTx(t, reporterKP, missed, 1, 0, 2)
+	_, err = sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{tx1, tx2}, ProposerPubKey: reporter})
+	if err == nil {
+		t.Fatal("duplicate miss evidence was accepted")
+	}
+	if count, _ := s.MissCountOf(missed); count != 0 {
+		t.Fatalf("duplicate miss evidence changed miss count to %d", count)
+	}
+}
+
 func TestApplyBlockRollback(t *testing.T) {
 	sm, db := openSM(t)
 	l, _ := ledger.New(db)
@@ -251,9 +522,11 @@ func TestApplyBlockRollback(t *testing.T) {
 	receiverKP, _ := keys.GenerateKeypair()
 
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
-	if err := l.Seed(senderKP.PublicKey, new(big.Int).Mul(big.NewInt(100), scale)); err != nil {
+	initial := new(big.Int).Mul(big.NewInt(100), scale)
+	if err := l.Seed(senderKP.PublicKey, initial); err != nil {
 		t.Fatal(err)
 	}
+	setTotalSupply(t, sm, initial)
 
 	tr1 := makeTransferTx(t, senderKP, receiverKP, 60, 1)
 	tr2 := makeTransferTx(t, senderKP, receiverKP, 60, 2) // this should fail due to insufficient funds
@@ -313,6 +586,7 @@ func TestContractDeployChargesGas(t *testing.T) {
 	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
 		t.Fatal(err)
 	}
+	setTotalSupply(t, sm, big.NewInt(1000))
 
 	var proposer [32]byte
 	proposer[0] = 1
@@ -349,6 +623,7 @@ func TestContractCallSameFeeForSameWorkload(t *testing.T) {
 	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
 		t.Fatal(err)
 	}
+	setTotalSupply(t, sm, big.NewInt(1000))
 
 	var proposer [32]byte
 	proposer[0] = 2
@@ -408,6 +683,7 @@ func TestBaseFeeAdjustsAcrossBlocks(t *testing.T) {
 	if err := l.Seed(kp.PublicKey, big.NewInt(50000)); err != nil {
 		t.Fatal(err)
 	}
+	setTotalSupply(t, sm, big.NewInt(50000))
 
 	var proposer [32]byte
 	proposer[0] = 3

@@ -70,6 +70,16 @@ func TestApplyFreshDB(t *testing.T) {
 	if err := genesis.Apply(sm, l, s, g); err != nil {
 		t.Fatal(err)
 	}
+	totalSupply, tracked, err := sm.CurrentTotalSupply()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked {
+		t.Fatal("genesis did not initialize total supply")
+	}
+	if totalSupply.Int64() != 10000 {
+		t.Fatalf("expected total supply 10000, got %d", totalSupply.Int64())
+	}
 
 	h, _ := sm.CurrentHeight()
 	if h != 0 {

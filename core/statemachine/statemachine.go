@@ -7,6 +7,7 @@ import (
 	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/gas"
+	"github.com/imattau/frg/core/leader"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/mint"
 	"github.com/imattau/frg/core/node"
@@ -20,6 +21,7 @@ var metaBucket = []byte("meta")
 var genesisAppliedKey = []byte("genesisApplied")
 var consensusVotePrefix = []byte("consensusVote/")
 var consensusStateKey = []byte("consensusState")
+var totalSupplyKey = []byte("totalSupply")
 
 // Block is the input to ApplyBlock.
 type Block struct {
@@ -51,8 +53,14 @@ type StateMachine struct {
 // and used to construct l and s.
 func New(db *bolt.DB, l *ledger.Ledger, s *staking.Store) (*StateMachine, error) {
 	if err := db.Update(func(btx *bolt.Tx) error {
-		if _, err := btx.CreateBucketIfNotExists(metaBucket); err != nil {
+		mb, err := btx.CreateBucketIfNotExists(metaBucket)
+		if err != nil {
 			return err
+		}
+		if mb.Get(totalSupplyKey) == nil {
+			if err := mb.Put(totalSupplyKey, nil); err != nil {
+				return err
+			}
 		}
 		if _, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode")); err != nil {
 			return err
@@ -60,7 +68,7 @@ func New(db *bolt.DB, l *ledger.Ledger, s *staking.Store) (*StateMachine, error)
 		if _, err := btx.CreateBucketIfNotExists([]byte("contract_state")); err != nil {
 			return err
 		}
-		_, err := btx.CreateBucketIfNotExists(blocksBucket)
+		_, err = btx.CreateBucketIfNotExists(blocksBucket)
 		return err
 	}); err != nil {
 		return nil, err
@@ -116,6 +124,34 @@ func (sm *StateMachine) GenesisApplied() (bool, error) {
 // MarkGenesisAppliedTx records completed genesis initialization atomically.
 func (sm *StateMachine) MarkGenesisAppliedTx(btx *bolt.Tx) error {
 	return btx.Bucket(metaBucket).Put(genesisAppliedKey, []byte{1})
+}
+
+// SetTotalSupplyTx records the canonical total token supply inside an existing transaction.
+func (sm *StateMachine) SetTotalSupplyTx(btx *bolt.Tx, total *big.Int) error {
+	if total == nil || total.Sign() < 0 {
+		return rgerrors.New(rgerrors.ErrArithmeticOverflow, "total supply must be non-negative")
+	}
+	return btx.Bucket(metaBucket).Put(totalSupplyKey, total.Bytes())
+}
+
+// CurrentTotalSupply returns the tracked total token supply.
+// The second return value is false when supply metadata has not been initialized.
+func (sm *StateMachine) CurrentTotalSupply() (*big.Int, bool, error) {
+	var total *big.Int
+	var tracked bool
+	err := sm.db.View(func(btx *bolt.Tx) error {
+		v := btx.Bucket(metaBucket).Get(totalSupplyKey)
+		if v == nil {
+			return nil
+		}
+		tracked = true
+		total = new(big.Int).SetBytes(v)
+		return nil
+	})
+	if total == nil {
+		total = big.NewInt(0)
+	}
+	return total, tracked, err
 }
 
 // Update executes fn in the state machine's shared database transaction.
@@ -188,11 +224,11 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		return nil, rgerrors.Newf(rgerrors.ErrBlockHeightSequenceFault,
 			"expected height %d, got %d", cur+1, b.Height)
 	}
+	previousRoot, err := sm.CurrentStateRoot()
+	if err != nil {
+		return nil, err
+	}
 	if b.PrevStateRoot != [32]byte{} {
-		previousRoot, rootErr := sm.CurrentStateRoot()
-		if rootErr != nil {
-			return nil, rootErr
-		}
 		if previousRoot != b.PrevStateRoot {
 			return nil, rgerrors.Newf(rgerrors.ErrBlockHeightSequenceFault,
 				"block parent state root does not match current state")
@@ -212,14 +248,32 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		return nil, err
 	}
 
-	totalSupply, totalStaked, err := sm.supplyAndStaked()
+	validators, _, totalSupply, totalStaked, supplyTracked, err := sm.supplyAndStaked()
 	if err != nil {
 		return nil, err
 	}
+	seenMissEvidence := make(map[string]struct{})
+	for _, t := range b.Txs {
+		if t.Type == tx.TxTypeMissEvidence {
+			if err := validateMissEvidenceTx(t, b.Height, previousRoot, validators); err != nil {
+				return nil, err
+			}
+			key := missEvidenceKey(t)
+			if _, ok := seenMissEvidence[key]; ok {
+				return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "duplicate miss evidence")
+			}
+			seenMissEvidence[key] = struct{}{}
+		}
+	}
 	mintAmount := mint.MintPerBlock(totalSupply, totalStaked)
+	if len(validators) == 0 {
+		mintAmount = big.NewInt(0)
+	}
+	mintShares := mint.SplitReward(mintAmount, len(validators))
 
 	var stateRoot [32]byte
 	totalGas := uint64(0)
+	totalSlashed := big.NewInt(0)
 	txFuels := make(map[int]uint64) // tx index → fuel consumed (contract txs only)
 
 	// Single atomic write: contracts, transfers, state root, gas, miss-evidence, mint, meta.
@@ -323,13 +377,18 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					if err := sm.ledger.BurnTx(btx, escrow, slashAmt); err != nil {
 						return err
 					}
+					totalSlashed.Add(totalSlashed, slashAmt)
 				}
 			}
 		}
 
-		// 5. Mint block reward to proposer.
-		if mintAmount.Sign() > 0 {
-			if err := sm.ledger.CreditTx(btx, b.ProposerPubKey, mintAmount); err != nil {
+		// 5. Mint block rewards into validator reward accounts.
+		for i, share := range mintShares {
+			if share.Sign() == 0 {
+				continue
+			}
+			rewardAccount := gas.FeeAccount(validators[i])
+			if err := sm.ledger.CreditTx(btx, rewardAccount, share); err != nil {
 				return err
 			}
 		}
@@ -348,6 +407,15 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		nextFeeBuf := nextBaseFee.Bytes()
 		if err := mb.Put([]byte("baseFee"), nextFeeBuf); err != nil {
 			return err
+		}
+		if supplyTracked {
+			nextSupply := new(big.Int).Set(totalSupply)
+			nextSupply.Sub(nextSupply, new(big.Int).Mul(baseFee, new(big.Int).SetUint64(totalGas)))
+			nextSupply.Sub(nextSupply, totalSlashed)
+			nextSupply.Add(nextSupply, mintAmount)
+			if err := sm.SetTotalSupplyTx(btx, nextSupply); err != nil {
+				return err
+			}
 		}
 		if b.StateRoot != [32]byte{} && b.StateRoot != stateRoot {
 			return rgerrors.Newf(rgerrors.ErrRootMismatch,
@@ -404,20 +472,60 @@ func (sm *StateMachine) contractGasLimit(btx *bolt.Tx, sender [32]byte, baseFee 
 	return affordableGas.Uint64() - 1, nil
 }
 
-func (sm *StateMachine) supplyAndStaked() (*big.Int, *big.Int, error) {
-	_, amounts, err := sm.staking.BondedAmounts()
+func (sm *StateMachine) supplyAndStaked() ([][32]byte, []*big.Int, *big.Int, *big.Int, bool, error) {
+	validators, amounts, err := sm.staking.BondedAmounts()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, false, err
 	}
 	totalStaked := new(big.Int)
 	for _, a := range amounts {
 		totalStaked.Add(totalStaked, a)
 	}
-	// Total supply approximation: sum all ledger balances is expensive.
-	// Use totalStaked * 2 as a conservative proxy until a supply tracker is added.
-	totalSupply := new(big.Int).Mul(totalStaked, big.NewInt(2))
-	if totalSupply.Sign() == 0 {
-		totalSupply = big.NewInt(1_000_000_000)
+
+	totalSupply, tracked, err := sm.CurrentTotalSupply()
+	if err != nil {
+		return nil, nil, nil, nil, false, err
 	}
-	return totalSupply, totalStaked, nil
+	if !tracked {
+		totalSupply = big.NewInt(0)
+	}
+	return validators, amounts, totalSupply, totalStaked, tracked, nil
+}
+
+func validateMissEvidenceTx(t *tx.Tx, blockHeight uint64, prevStateRoot [32]byte, validators [][32]byte) error {
+	if t.Value == nil || t.Value.Sign() != 0 {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "miss evidence value must be zero")
+	}
+	if t.MissedHeight != blockHeight {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "miss evidence height must match block height")
+	}
+	if t.ReceiverPubKey != t.MissedProposer {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "miss evidence receiver must match missed proposer")
+	}
+	if t.SkipIndex == ^uint32(0) {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "miss evidence skip index overflows")
+	}
+	expectedMissed, err := leader.SkipProposer(prevStateRoot, blockHeight, validators, t.SkipIndex)
+	if err != nil {
+		return err
+	}
+	if t.MissedProposer != expectedMissed {
+		return rgerrors.New(rgerrors.ErrInvalidSignature, "miss evidence targets unexpected proposer")
+	}
+	expectedReporter, err := leader.SkipProposer(prevStateRoot, blockHeight, validators, t.SkipIndex+1)
+	if err != nil {
+		return err
+	}
+	if t.SenderPubKey != expectedReporter {
+		return rgerrors.New(rgerrors.ErrInvalidSignature, "miss evidence reporter is not next proposer")
+	}
+	return nil
+}
+
+func missEvidenceKey(t *tx.Tx) string {
+	buf := make([]byte, 8+4+32)
+	binary.BigEndian.PutUint64(buf[:8], t.MissedHeight)
+	binary.BigEndian.PutUint32(buf[8:12], t.SkipIndex)
+	copy(buf[12:], t.MissedProposer[:])
+	return string(buf)
 }

@@ -58,6 +58,7 @@ func Apply(sm *statemachine.StateMachine, l *ledger.Ledger, s *staking.Store, g 
 	}
 
 	return sm.Update(func(btx *bolt.Tx) error {
+		genesisBalances := make(map[[32]byte]*big.Int, len(g.Balances))
 		for _, entry := range g.Balances {
 			addr, err := decodeKey(entry.Account, "account")
 			if err != nil {
@@ -70,6 +71,14 @@ func Apply(sm *statemachine.StateMachine, l *ledger.Ledger, s *staking.Store, g 
 			if err := l.SeedTx(btx, addr, amt); err != nil {
 				return fmt.Errorf("seed balance for %s: %w", entry.Account, err)
 			}
+			genesisBalances[addr] = new(big.Int).Set(amt)
+		}
+		totalSupply := new(big.Int)
+		for _, amt := range genesisBalances {
+			totalSupply.Add(totalSupply, amt)
+		}
+		if err := sm.SetTotalSupplyTx(btx, totalSupply); err != nil {
+			return fmt.Errorf("set genesis total supply: %w", err)
 		}
 		for _, entry := range g.Validators {
 			pub, err := decodeKey(entry.PubKey, "validator pubkey")
