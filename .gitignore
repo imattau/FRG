@@ -11,3 +11,16 @@ coverage.out
 /.gocache/
 /.toolchain/
 frg-faucet
+frg-node
+frg-cli
+frg-devnet
+frg-analysis
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Devnet data
+devnet-data/
+/tmp/
