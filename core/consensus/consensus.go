@@ -79,17 +79,19 @@ func (rs *RoundState) Unlock() {
 
 // TimeoutConfig holds phase timeout durations.
 type TimeoutConfig struct {
-	Propose   time.Duration
-	Prevote   time.Duration
-	Precommit time.Duration
+	ProposeDelay time.Duration
+	Propose      time.Duration
+	Prevote      time.Duration
+	Precommit    time.Duration
 }
 
 // DefaultTimeouts returns production-ready timeout values.
 func DefaultTimeouts() TimeoutConfig {
 	return TimeoutConfig{
-		Propose:   3 * time.Second,
-		Prevote:   3 * time.Second,
-		Precommit: 3 * time.Second,
+		ProposeDelay: 500 * time.Millisecond,
+		Propose:      3 * time.Second,
+		Prevote:      3 * time.Second,
+		Precommit:    3 * time.Second,
 	}
 }
 
@@ -165,11 +167,19 @@ func (e *Engine) Start(ctx context.Context) error {
 	precommitTimer := time.NewTimer(0)
 	precommitTimer.Stop()
 
-	// Enter propose: if we are the proposer, build and broadcast.
+	// Enter propose: schedule delayed proposal broadcast for the proposer.
 	prevRoot := e.prevStateRoot()
 	proposerPK, _ := leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
 	if proposerPK == e.kp.PublicKey {
-		e.broadcastProposal(rs, prevRoot)
+		rsCopy := rs
+		pkCopy := proposerPK
+		rootCopy := prevRoot
+		time.AfterFunc(e.timeouts.ProposeDelay, func() {
+			if rsCopy.Phase == PhasePropose {
+				_ = pkCopy
+				e.broadcastProposal(rsCopy, rootCopy)
+			}
+		})
 	}
 
 	for {
@@ -402,7 +412,13 @@ func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []
 	proposerPK, _ := leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
 	proposeTimer.Reset(e.timeouts.Propose)
 	if proposerPK == e.kp.PublicKey {
-		e.broadcastProposal(rs, prevRoot)
+		rsCopy := rs
+		rootCopy := prevRoot
+		time.AfterFunc(e.timeouts.ProposeDelay, func() {
+			if rsCopy.Phase == PhasePropose {
+				e.broadcastProposal(rsCopy, rootCopy)
+			}
+		})
 	}
 }
 

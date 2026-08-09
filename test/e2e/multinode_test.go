@@ -63,9 +63,10 @@ func newNodeStack(t *testing.T, ctx context.Context) *nodeStack {
 
 	bl := blockloop.New(kp, p2pNode)
 	engine := consensus.New(kp, s, sm, p2pNode, bl, consensus.TimeoutConfig{
-		Propose:   1 * time.Second,
-		Prevote:   1 * time.Second,
-		Precommit: 1 * time.Second,
+		ProposeDelay: 100 * time.Millisecond,
+		Propose:      1 * time.Second,
+		Prevote:      1 * time.Second,
+		Precommit:    1 * time.Second,
 	})
 
 	return &nodeStack{

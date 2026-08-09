@@ -37,8 +37,9 @@ const (
 	defaultGenesisPath    = "genesis.json"
 	defaultListenAddr     = "/ip4/127.0.0.1/tcp/7777"
 	defaultGRPCListenAddr = "127.0.0.1:50051"
-	defaultTimeoutMS      = 3000
-	defaultGenesisBond    = "1000"
+defaultTimeoutMS      = 3000
+defaultProposeDelayMS = 500
+defaultGenesisBond    = "1000"
 	defaultGenesisBalance = "10000"
 	defaultChainID        = "frg-mainnet-1"
 )
@@ -68,8 +69,9 @@ type GRPCConfig struct {
 }
 
 type ConsensusConfig struct {
-	ProposeTimeoutMS   int `toml:"propose_timeout_ms"`
-	PrevoteTimeoutMS   int `toml:"prevote_timeout_ms"`
+	ProposeDelayMS    int `toml:"propose_delay_ms"`
+	ProposeTimeoutMS  int `toml:"propose_timeout_ms"`
+	PrevoteTimeoutMS  int `toml:"prevote_timeout_ms"`
 	PrecommitTimeoutMS int `toml:"precommit_timeout_ms"`
 }
 
@@ -162,9 +164,10 @@ func main() {
 		defer bl.Stop()
 
 		timeoutCfg := consensus.TimeoutConfig{
-			Propose:   time.Duration(cfg.Consensus.ProposeTimeoutMS) * time.Millisecond,
-			Prevote:   time.Duration(cfg.Consensus.PrevoteTimeoutMS) * time.Millisecond,
-			Precommit: time.Duration(cfg.Consensus.PrecommitTimeoutMS) * time.Millisecond,
+			ProposeDelay: time.Duration(cfg.Consensus.ProposeDelayMS) * time.Millisecond,
+			Propose:      time.Duration(cfg.Consensus.ProposeTimeoutMS) * time.Millisecond,
+			Prevote:      time.Duration(cfg.Consensus.PrevoteTimeoutMS) * time.Millisecond,
+			Precommit:    time.Duration(cfg.Consensus.PrecommitTimeoutMS) * time.Millisecond,
 		}
 
 		engine = consensus.New(kp, s, sm, p2pNode, bl, timeoutCfg)
@@ -221,8 +224,9 @@ func defaultConfig() Config {
 			Listen: defaultGRPCListenAddr,
 		},
 		Consensus: ConsensusConfig{
-			ProposeTimeoutMS:   defaultTimeoutMS,
-			PrevoteTimeoutMS:   defaultTimeoutMS,
+			ProposeDelayMS:    defaultProposeDelayMS,
+			ProposeTimeoutMS:  defaultTimeoutMS,
+			PrevoteTimeoutMS:  defaultTimeoutMS,
 			PrecommitTimeoutMS: defaultTimeoutMS,
 		},
 	}
@@ -246,6 +250,9 @@ func normalizeConfig(cfg *Config) {
 	}
 	if strings.TrimSpace(cfg.ChainID) == "" {
 		cfg.ChainID = defaultChainID
+	}
+	if cfg.Consensus.ProposeDelayMS <= 0 {
+		cfg.Consensus.ProposeDelayMS = defaultProposeDelayMS
 	}
 	if cfg.Consensus.ProposeTimeoutMS <= 0 {
 		cfg.Consensus.ProposeTimeoutMS = defaultTimeoutMS

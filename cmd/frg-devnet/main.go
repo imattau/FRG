@@ -31,6 +31,7 @@ enable_mdns = true
 listen = "0.0.0.0:%d"
 
 [consensus]
+propose_delay_ms = 500
 propose_timeout_ms = 3000
 prevote_timeout_ms = 3000
 precommit_timeout_ms = 3000
