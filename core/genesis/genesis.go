@@ -23,6 +23,7 @@ type BalanceEntry struct {
 }
 
 type Genesis struct {
+    ChainID    string           `json:"chain_id"`
     Validators []ValidatorEntry `json:"validators"`
     Balances   []BalanceEntry   `json:"balances"`
 }

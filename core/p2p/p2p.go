@@ -10,6 +10,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/multiformats/go-multiaddr"
 
 	"github.com/imattau/frg/core/keys"
@@ -17,21 +19,37 @@ import (
 )
 
 const (
-	topicTx    = "frg/tx/v1"
-	topicBatch = "frg/batch/v1"
-	topicBlock = "frg/block/v1"
-	topicVote  = "frg/vote/v1"
+	topicTxSuffix    = "/tx/v1"
+	topicBatchSuffix = "/batch/v1"
+	topicBlockSuffix = "/block/v1"
+	topicVoteSuffix  = "/vote/v1"
+	defaultChainID   = "frg-mainnet-1"
 )
 
 // Config holds node configuration.
 type Config struct {
 	ListenAddr     string   // e.g. "/ip4/0.0.0.0/tcp/7777"
 	BootstrapPeers []string // multiaddrs of bootstrap nodes
+	ChainID        string   // network isolation, default "frg-mainnet-1"
 	EnableMDNS     bool     // true for testnet/local only
 }
 
+func (c *Config) chainID() string {
+	if c.ChainID == "" {
+		return defaultChainID
+	}
+	return c.ChainID
+}
+
+func (c *Config) topicTx() string    { return "frg/" + c.chainID() + topicTxSuffix }
+func (c *Config) topicBatch() string { return "frg/" + c.chainID() + topicBatchSuffix }
+func (c *Config) topicBlock() string { return "frg/" + c.chainID() + topicBlockSuffix }
+func (c *Config) topicVote() string  { return "frg/" + c.chainID() + topicVoteSuffix }
+func (c *Config) dhtPrefix() string  { return "/frg/" + c.chainID() + "/kad/v1" }
+
 // Node is the FRG P2P node.
 type Node struct {
+	cfg        Config
 	host       host.Host
 	dht        *dht.IpfsDHT
 	ps         *pubsub.PubSub
@@ -83,25 +101,25 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("gossipsub: %w", err)
 	}
 
-	txTopic, err := ps.Join(topicTx)
+	txTopic, err := ps.Join(cfg.topicTx())
 	if err != nil {
 		cancel()
 		h.Close()
 		return nil, fmt.Errorf("join tx topic: %w", err)
 	}
-	batchTopic, err := ps.Join(topicBatch)
+	batchTopic, err := ps.Join(cfg.topicBatch())
 	if err != nil {
 		cancel()
 		h.Close()
 		return nil, fmt.Errorf("join batch topic: %w", err)
 	}
-	blockTopic, err := ps.Join(topicBlock)
+	blockTopic, err := ps.Join(cfg.topicBlock())
 	if err != nil {
 		cancel()
 		h.Close()
 		return nil, fmt.Errorf("join block topic: %w", err)
 	}
-	voteTopic, err := ps.Join(topicVote)
+	voteTopic, err := ps.Join(cfg.topicVote())
 	if err != nil {
 		cancel()
 		h.Close()
@@ -134,6 +152,7 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 	}
 
 	n := &Node{
+		cfg:        cfg,
 		host:       h,
 		ps:         ps,
 		txTopic:    txTopic,
@@ -156,7 +175,7 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 	go n.readVotes(innerCtx)
 
 	if len(cfg.BootstrapPeers) > 0 {
-		kad, err := dht.New(innerCtx, h, dht.ProtocolPrefix("/frg/kad/v1"))
+		kad, err := dht.New(innerCtx, h, dht.ProtocolPrefix(protocol.ID(cfg.dhtPrefix())))
 		if err != nil {
 			cancel()
 			h.Close()
@@ -175,6 +194,10 @@ func New(ctx context.Context, kp *keys.Keypair, cfg Config) (*Node, error) {
 			_ = h.Connect(innerCtx, *pi)
 		}
 		_ = kad.Bootstrap(innerCtx)
+	}
+
+	if cfg.EnableMDNS {
+		_ = n.setupMDNS(innerCtx)
 	}
 
 	return n, nil
@@ -348,4 +371,21 @@ func parseTx(data []byte) (*tx.Tx, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+type discoveryNotifee struct {
+	h host.Host
+}
+
+func (n *discoveryNotifee) HandlePeerFound(pi peer.AddrInfo) {
+	if pi.ID == n.h.ID() {
+		return
+	}
+	_ = n.h.Connect(context.Background(), pi)
+}
+
+func (node *Node) setupMDNS(ctx context.Context) error {
+	tag := node.cfg.chainID()
+	svc := mdns.NewMdnsService(node.host, tag, &discoveryNotifee{h: node.host})
+	return svc.Start()
 }

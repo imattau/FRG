@@ -40,6 +40,7 @@ const (
 	defaultTimeoutMS      = 3000
 	defaultGenesisBond    = "1000"
 	defaultGenesisBalance = "10000"
+	defaultChainID        = "frg-mainnet-1"
 )
 
 type Config struct {
@@ -47,6 +48,7 @@ type Config struct {
 	P2P       P2PConfig       `toml:"p2p"`
 	GRPC      GRPCConfig      `toml:"grpc"`
 	Consensus ConsensusConfig `toml:"consensus"`
+	ChainID   string          `toml:"chain_id"`
 }
 
 type NodeConfig struct {
@@ -56,8 +58,9 @@ type NodeConfig struct {
 }
 
 type P2PConfig struct {
-	Listen string   `toml:"listen"`
-	Peers  []string `toml:"peers"`
+	Listen     string   `toml:"listen"`
+	Peers      []string `toml:"peers"`
+	EnableMDNS bool     `toml:"enable_mdns"`
 }
 
 type GRPCConfig struct {
@@ -86,7 +89,7 @@ func main() {
 	}
 	log.Printf("Node started with PubKey: %x", kp.PublicKey)
 
-	if err := ensureGenesis(cfg.Node.GenesisPath, kp); err != nil {
+	if err := ensureGenesis(cfg.Node.GenesisPath, cfg.ChainID, kp); err != nil {
 		log.Fatalf("Prepare genesis: %v", err)
 	}
 
@@ -129,6 +132,8 @@ func main() {
 		p2pNode, err = p2p.New(ctx, kp, p2p.Config{
 			ListenAddr:     cfg.P2P.Listen,
 			BootstrapPeers: cfg.P2P.Peers,
+			ChainID:        cfg.ChainID,
+			EnableMDNS:     cfg.P2P.EnableMDNS,
 		})
 		if err != nil {
 			log.Fatalf("Init P2P: %v", err)
@@ -239,6 +244,9 @@ func normalizeConfig(cfg *Config) {
 	if strings.TrimSpace(cfg.GRPC.Listen) == "" {
 		cfg.GRPC.Listen = defaultGRPCListenAddr
 	}
+	if strings.TrimSpace(cfg.ChainID) == "" {
+		cfg.ChainID = defaultChainID
+	}
 	if cfg.Consensus.ProposeTimeoutMS <= 0 {
 		cfg.Consensus.ProposeTimeoutMS = defaultTimeoutMS
 	}
@@ -284,7 +292,7 @@ func loadOrGenerateKeypair(path string) (*keys.Keypair, error) {
 	}
 }
 
-func ensureGenesis(path string, kp *keys.Keypair) error {
+func ensureGenesis(path string, chainID string, kp *keys.Keypair) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -296,6 +304,7 @@ func ensureGenesis(path string, kp *keys.Keypair) error {
 	}
 
 	g := genesis.Genesis{
+		ChainID: chainID,
 		Validators: []genesis.ValidatorEntry{
 			{
 				PubKey: hex.EncodeToString(kp.PublicKey[:]),

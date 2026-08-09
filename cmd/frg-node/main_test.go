@@ -39,7 +39,7 @@ func TestEnsureGenesisCreatesBootstrapFile(t *testing.T) {
 	genesisPath := filepath.Join(dir, "genesis.json")
 	kp := keys.NewKeypairFromSeed([32]byte{1})
 
-	if err := ensureGenesis(genesisPath, kp); err != nil {
+	if err := ensureGenesis(genesisPath, defaultChainID, kp); err != nil {
 		t.Fatal(err)
 	}
 

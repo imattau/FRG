@@ -1,0 +1,6 @@
+.git/
+devnet-data/
+*.db
+frg.key
+genesis.json
+config.toml
