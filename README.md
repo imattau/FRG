@@ -144,6 +144,10 @@ That skips P2P/blockloop startup and brings up the admin API immediately on `127
 By default it opens on `http://127.0.0.1:8080` and points at `127.0.0.1:50051`.
 Use the page to submit raw hex-encoded transactions, submit batches, stream block headers, and poll live node status from any FRG gRPC server.
 
+### Validator Docker Quickstart
+
+For a containerized validator setup with mounted genesis/key data and environment-based config generation, see [docs/operator-quickstart.md](docs/operator-quickstart.md).
+
 ### Test
 
 ```bash

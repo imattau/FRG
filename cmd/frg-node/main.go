@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -33,6 +34,8 @@ import (
 	"github.com/imattau/frg/core/statemachine"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
+	libp2pCrypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 	bolt "go.etcd.io/bbolt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -95,6 +98,13 @@ type ConsensusConfig struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		if err := runNodeInit(os.Args[2:], os.Stdout); err != nil {
+			log.Fatalf("Init: %v", err)
+		}
+		return
+	}
+
 	configPath := flag.String("config", "config.toml", "path to config.toml")
 	grpcOnly := flag.Bool("grpc-only", false, "start only the gRPC admin API and skip P2P/blockloop startup")
 	flag.Parse()
@@ -234,6 +244,88 @@ func main() {
 	if engine != nil {
 		engine.Stop()
 	}
+}
+
+func runNodeInit(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(out)
+	dataDir := fs.String("data-dir", ".", "node data directory")
+	chainID := fs.String("chain-id", defaultChainID, "chain identifier")
+	p2pListen := fs.String("p2p-listen", "/ip4/0.0.0.0/tcp/7777", "P2P listen multiaddr")
+	grpcListen := fs.String("grpc-listen", defaultGRPCListenAddr, "gRPC listen address")
+	grpcTLSCertFile := fs.String("grpc-tls-cert-file", "", "gRPC TLS server certificate path")
+	grpcTLSKeyFile := fs.String("grpc-tls-key-file", "", "gRPC TLS server key path")
+	grpcTLSClientCAFile := fs.String("grpc-tls-client-ca-file", "", "gRPC client CA path for mTLS")
+	metricsListen := fs.String("metrics-listen", defaultMetricsListenAddr, "metrics/readiness listen address")
+	peers := fs.String("peers", "", "comma-separated bootstrap peer multiaddrs")
+	enableMDNS := fs.Bool("enable-mdns", false, "enable mDNS discovery")
+	bootstrapGenesis := fs.Bool("bootstrap-genesis", false, "create a private single-validator genesis if missing")
+	force := fs.Bool("force", false, "overwrite generated config.toml and .env")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(*dataDir, 0755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+
+	keyPath := filepath.Join(*dataDir, defaultKeypairPath)
+	configPath := filepath.Join(*dataDir, "config.toml")
+	envPath := filepath.Join(*dataDir, ".env")
+	genesisPath := filepath.Join(*dataDir, defaultGenesisPath)
+	dbPath := filepath.Join(*dataDir, defaultDBPath)
+
+	kp, err := loadOrGenerateKeypair(keyPath)
+	if err != nil {
+		return fmt.Errorf("keypair: %w", err)
+	}
+	peerID, err := peerIDForKeypair(kp)
+	if err != nil {
+		return err
+	}
+
+	cfg := defaultConfig()
+	cfg.Node.KeypairPath = keyPath
+	cfg.Node.DBPath = dbPath
+	cfg.Node.GenesisPath = genesisPath
+	cfg.P2P.Listen = *p2pListen
+	cfg.P2P.Peers = splitCommaList(*peers)
+	cfg.P2P.EnableMDNS = *enableMDNS
+	cfg.GRPC.Listen = *grpcListen
+	cfg.GRPC.TLSCertFile = *grpcTLSCertFile
+	cfg.GRPC.TLSKeyFile = *grpcTLSKeyFile
+	cfg.GRPC.TLSClientCAFile = *grpcTLSClientCAFile
+	cfg.Metrics.Listen = *metricsListen
+	cfg.ChainID = *chainID
+	normalizeConfig(&cfg)
+	if err := validateConfig(cfg); err != nil {
+		return err
+	}
+
+	if *bootstrapGenesis {
+		if err := ensureGenesis(genesisPath, cfg.ChainID, kp); err != nil {
+			return err
+		}
+	}
+
+	if err := writeConfigFile(configPath, cfg, *force); err != nil {
+		return err
+	}
+	if err := writeEnvFile(envPath, cfg, kp, peerID, *force); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "FRG node initialized in %s\n", *dataDir)
+	fmt.Fprintf(out, "  validator_pubkey=%x\n", kp.PublicKey)
+	fmt.Fprintf(out, "  peer_id=%s\n", peerID)
+	fmt.Fprintf(out, "  p2p_listen=%s\n", cfg.P2P.Listen)
+	fmt.Fprintf(out, "  advertised_multiaddr=%s/p2p/%s\n", cfg.P2P.Listen, peerID)
+	fmt.Fprintf(out, "  config=%s\n", configPath)
+	fmt.Fprintf(out, "  env=%s\n", envPath)
+	if !*bootstrapGenesis {
+		fmt.Fprintf(out, "  genesis=%s (mount or copy network genesis before starting)\n", genesisPath)
+	}
+	return nil
 }
 
 func loadConfig(path string) (Config, error) {
@@ -430,6 +522,117 @@ func ensureGenesis(path string, chainID string, kp *keys.Keypair) error {
 	}
 	log.Printf("Created bootstrap genesis at %s", path)
 	return nil
+}
+
+func peerIDForKeypair(kp *keys.Keypair) (string, error) {
+	privKey, err := libp2pCrypto.UnmarshalEd25519PrivateKey(kp.PrivateKey[:])
+	if err != nil {
+		return "", fmt.Errorf("p2p key: %w", err)
+	}
+	pid, err := peer.IDFromPrivateKey(privKey)
+	if err != nil {
+		return "", fmt.Errorf("peer id: %w", err)
+	}
+	return pid.String(), nil
+}
+
+func splitCommaList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func writeConfigFile(path string, cfg Config, force bool) error {
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config: %w", err)
+		}
+	}
+	if err := ensureParentDir(path); err != nil {
+		return err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[node]\n")
+	fmt.Fprintf(&b, "keypair_path = %q\n", cfg.Node.KeypairPath)
+	fmt.Fprintf(&b, "db_path = %q\n", cfg.Node.DBPath)
+	fmt.Fprintf(&b, "genesis_path = %q\n\n", cfg.Node.GenesisPath)
+	fmt.Fprintf(&b, "[p2p]\n")
+	fmt.Fprintf(&b, "listen = %q\n", cfg.P2P.Listen)
+	fmt.Fprintf(&b, "peers = [\n")
+	for _, p := range cfg.P2P.Peers {
+		fmt.Fprintf(&b, "  %q,\n", p)
+	}
+	fmt.Fprintf(&b, "]\n")
+	fmt.Fprintf(&b, "enable_mdns = %t\n\n", cfg.P2P.EnableMDNS)
+	fmt.Fprintf(&b, "[grpc]\n")
+	fmt.Fprintf(&b, "listen = %q\n", cfg.GRPC.Listen)
+	if cfg.GRPC.TLSCertFile != "" {
+		fmt.Fprintf(&b, "tls_cert_file = %q\n", cfg.GRPC.TLSCertFile)
+	}
+	if cfg.GRPC.TLSKeyFile != "" {
+		fmt.Fprintf(&b, "tls_key_file = %q\n", cfg.GRPC.TLSKeyFile)
+	}
+	if cfg.GRPC.TLSClientCAFile != "" {
+		fmt.Fprintf(&b, "tls_client_ca_file = %q\n", cfg.GRPC.TLSClientCAFile)
+	}
+	fmt.Fprintf(&b, "\n[metrics]\n")
+	fmt.Fprintf(&b, "listen = %q\n\n", cfg.Metrics.Listen)
+	fmt.Fprintf(&b, "[consensus]\n")
+	fmt.Fprintf(&b, "propose_delay_ms = %d\n", cfg.Consensus.ProposeDelayMS)
+	fmt.Fprintf(&b, "propose_timeout_ms = %d\n", cfg.Consensus.ProposeTimeoutMS)
+	fmt.Fprintf(&b, "prevote_timeout_ms = %d\n", cfg.Consensus.PrevoteTimeoutMS)
+	fmt.Fprintf(&b, "precommit_timeout_ms = %d\n\n", cfg.Consensus.PrecommitTimeoutMS)
+	fmt.Fprintf(&b, "chain_id = %q\n", cfg.ChainID)
+	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+func writeEnvFile(path string, cfg Config, kp *keys.Keypair, peerID string, force bool) error {
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat env: %w", err)
+		}
+	}
+	if err := ensureParentDir(path); err != nil {
+		return err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "FRG_CHAIN_ID=%s\n", cfg.ChainID)
+	fmt.Fprintf(&b, "FRG_DATA_DIR=%s\n", filepath.Dir(cfg.Node.DBPath))
+	fmt.Fprintf(&b, "FRG_CONFIG=%s\n", filepath.Join(filepath.Dir(cfg.Node.DBPath), "config.toml"))
+	fmt.Fprintf(&b, "FRG_KEY_PATH=%s\n", cfg.Node.KeypairPath)
+	fmt.Fprintf(&b, "FRG_DB_PATH=%s\n", cfg.Node.DBPath)
+	fmt.Fprintf(&b, "FRG_GENESIS_PATH=%s\n", cfg.Node.GenesisPath)
+	fmt.Fprintf(&b, "FRG_P2P_LISTEN=%s\n", cfg.P2P.Listen)
+	fmt.Fprintf(&b, "FRG_P2P_PEERS=%s\n", strings.Join(cfg.P2P.Peers, ","))
+	fmt.Fprintf(&b, "FRG_P2P_ENABLE_MDNS=%t\n", cfg.P2P.EnableMDNS)
+	fmt.Fprintf(&b, "FRG_GRPC_LISTEN=%s\n", cfg.GRPC.Listen)
+	if cfg.GRPC.TLSCertFile != "" {
+		fmt.Fprintf(&b, "FRG_GRPC_TLS_CERT_FILE=%s\n", cfg.GRPC.TLSCertFile)
+	}
+	if cfg.GRPC.TLSKeyFile != "" {
+		fmt.Fprintf(&b, "FRG_GRPC_TLS_KEY_FILE=%s\n", cfg.GRPC.TLSKeyFile)
+	}
+	if cfg.GRPC.TLSClientCAFile != "" {
+		fmt.Fprintf(&b, "FRG_GRPC_TLS_CLIENT_CA_FILE=%s\n", cfg.GRPC.TLSClientCAFile)
+	}
+	fmt.Fprintf(&b, "FRG_METRICS_LISTEN=%s\n", cfg.Metrics.Listen)
+	fmt.Fprintf(&b, "FRG_VALIDATOR_PUBKEY=%s\n", hex.EncodeToString(kp.PublicKey[:]))
+	fmt.Fprintf(&b, "FRG_PEER_ID=%s\n", peerID)
+	fmt.Fprintf(&b, "FRG_ADVERTISED_MULTIADDR=%s\n", cfg.P2P.Listen+"/p2p/"+peerID)
+	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
 func ensureParentDir(path string) error {

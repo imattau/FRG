@@ -15,7 +15,9 @@ RUN addgroup -S frg && adduser -S -G frg frg \
     && mkdir -p /var/lib/frg \
     && chown -R frg:frg /var/lib/frg
 COPY --from=builder /frg-node /usr/local/bin/frg-node
+COPY docker/frg-node-entrypoint.sh /usr/local/bin/frg-node-entrypoint
+RUN chmod +x /usr/local/bin/frg-node-entrypoint
 WORKDIR /var/lib/frg
 USER frg
 EXPOSE 7777 50051 9090
-ENTRYPOINT ["frg-node"]
+ENTRYPOINT ["frg-node-entrypoint"]

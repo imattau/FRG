@@ -104,6 +104,73 @@ func TestLoadOrGenerateKeypairCreatesFile(t *testing.T) {
 	}
 }
 
+func TestRunNodeInitCreatesFirstRunFiles(t *testing.T) {
+	dir := t.TempDir()
+	var out strings.Builder
+	err := runNodeInit([]string{
+		"--data-dir", dir,
+		"--chain-id", "frg-test-1",
+		"--p2p-listen", "/ip4/0.0.0.0/tcp/17777",
+		"--grpc-listen", "127.0.0.1:15051",
+		"--grpc-tls-cert-file", "/var/lib/frg/tls/server.crt",
+		"--grpc-tls-key-file", "/var/lib/frg/tls/server.key",
+		"--grpc-tls-client-ca-file", "/var/lib/frg/tls/client-ca.crt",
+		"--metrics-listen", "127.0.0.1:19090",
+		"--peers", "/ip4/127.0.0.1/tcp/17778/p2p/peer-a,/dns4/bootstrap.example/tcp/17777/p2p/peer-b",
+		"--bootstrap-genesis",
+	}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"frg.key", "config.toml", ".env", "genesis.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("%s was not created: %v", name, err)
+		}
+	}
+
+	config, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configText := string(config)
+	for _, want := range []string{
+		`chain_id = "frg-test-1"`,
+		`listen = "/ip4/0.0.0.0/tcp/17777"`,
+		`tls_cert_file = "/var/lib/frg/tls/server.crt"`,
+		`"/dns4/bootstrap.example/tcp/17777/p2p/peer-b"`,
+	} {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, configText)
+		}
+	}
+
+	envData, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envText := string(envData)
+	for _, want := range []string{"FRG_VALIDATOR_PUBKEY=", "FRG_PEER_ID=", "FRG_ADVERTISED_MULTIADDR=", "FRG_GRPC_TLS_CERT_FILE=/var/lib/frg/tls/server.crt"} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf(".env missing %q:\n%s", want, envText)
+		}
+	}
+	if !strings.Contains(out.String(), "validator_pubkey=") || !strings.Contains(out.String(), "peer_id=") {
+		t.Fatalf("init output missing identity details:\n%s", out.String())
+	}
+}
+
+func TestRunNodeInitDoesNotCreateGenesisByDefault(t *testing.T) {
+	dir := t.TempDir()
+	var out strings.Builder
+	if err := runNodeInit([]string{"--data-dir", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "genesis.json")); !os.IsNotExist(err) {
+		t.Fatalf("genesis should not be created by default: %v", err)
+	}
+}
+
 func containsString(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
