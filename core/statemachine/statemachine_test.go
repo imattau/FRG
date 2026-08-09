@@ -3,6 +3,7 @@ package statemachine_test
 import (
 	"encoding/binary"
 	"math/big"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -115,6 +116,37 @@ func TestBackupCreatesConsistentSnapshot(t *testing.T) {
 	if height != 1 {
 		t.Fatalf("backup height = %d, want 1", height)
 	}
+}
+
+func TestBackupRetentionAndRestore(t *testing.T) {
+	sm, db := openSM(t)
+	backupDir := t.TempDir()
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := statemachine.CreateBackup(db, backupDir, 1); err != nil {
+		t.Fatal(err)
+	}
+	second, err := statemachine.CreateBackup(db, backupDir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("retained backups = %d, want 1", len(entries))
+	}
+	restored := filepath.Join(t.TempDir(), "restored.db")
+	if err := statemachine.RestoreDatabase(second, restored); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := bolt.Open(restored, 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
 }
 
 func TestConsensusVoteReservationIsDurable(t *testing.T) {

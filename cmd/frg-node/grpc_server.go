@@ -100,9 +100,13 @@ type nodeGRPCServer struct {
 	query   nodeQueryAPI
 	chainID string
 	limiter *submitLimiter
+	metrics *nodeMetrics
 }
 
 func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frgpb.SubmitResponse, error) {
+	if s.metrics != nil {
+		s.metrics.rpcRequests.Add(1)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -110,6 +114,9 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 		return &frgpb.SubmitResponse{Ok: false, Error: "transaction payload exceeds size limit"}, nil
 	}
 	if err := s.limiter.allow(ctx, 1); err != nil {
+		if s.metrics != nil {
+			s.metrics.rpcRejected.Add(1)
+		}
 		return nil, err
 	}
 
@@ -126,10 +133,16 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 	if err := s.node.BroadcastTx(t); err != nil {
 		return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 	}
+	if s.metrics != nil {
+		s.metrics.txAccepted.Add(1)
+	}
 	return &frgpb.SubmitResponse{Ok: true}, nil
 }
 
 func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArray) (*frgpb.SubmitResponse, error) {
+	if s.metrics != nil {
+		s.metrics.rpcRequests.Add(1)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -137,6 +150,9 @@ func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArra
 		return &frgpb.SubmitResponse{Ok: false, Error: "batch size is invalid"}, nil
 	}
 	if err := s.limiter.allow(ctx, len(in.Data)); err != nil {
+		if s.metrics != nil {
+			s.metrics.rpcRejected.Add(1)
+		}
 		return nil, err
 	}
 
@@ -159,6 +175,9 @@ func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArra
 	}
 	if err := s.node.BroadcastBatch(batch); err != nil {
 		return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
+	}
+	if s.metrics != nil {
+		s.metrics.batchAccepted.Add(1)
 	}
 	return &frgpb.SubmitResponse{Ok: true}, nil
 }

@@ -41,22 +41,24 @@ import (
 )
 
 const (
-	defaultKeypairPath    = "frg.key"
-	defaultDBPath         = "frg.db"
-	defaultGenesisPath    = "genesis.json"
-	defaultListenAddr     = "/ip4/127.0.0.1/tcp/7777"
-	defaultGRPCListenAddr = "127.0.0.1:50051"
-	defaultTimeoutMS      = 3000
-	defaultProposeDelayMS = 500
-	defaultGenesisBond    = "1000"
-	defaultGenesisBalance = "10000"
-	defaultChainID        = "frg-mainnet-1"
+	defaultKeypairPath       = "frg.key"
+	defaultDBPath            = "frg.db"
+	defaultGenesisPath       = "genesis.json"
+	defaultListenAddr        = "/ip4/127.0.0.1/tcp/7777"
+	defaultGRPCListenAddr    = "127.0.0.1:50051"
+	defaultMetricsListenAddr = "127.0.0.1:9090"
+	defaultTimeoutMS         = 3000
+	defaultProposeDelayMS    = 500
+	defaultGenesisBond       = "1000"
+	defaultGenesisBalance    = "10000"
+	defaultChainID           = "frg-mainnet-1"
 )
 
 type Config struct {
 	Node      NodeConfig      `toml:"node"`
 	P2P       P2PConfig       `toml:"p2p"`
 	GRPC      GRPCConfig      `toml:"grpc"`
+	Metrics   MetricsConfig   `toml:"metrics"`
 	Consensus ConsensusConfig `toml:"consensus"`
 	ChainID   string          `toml:"chain_id"`
 }
@@ -78,6 +80,10 @@ type GRPCConfig struct {
 	TLSCertFile     string `toml:"tls_cert_file"`
 	TLSKeyFile      string `toml:"tls_key_file"`
 	TLSClientCAFile string `toml:"tls_client_ca_file"`
+}
+
+type MetricsConfig struct {
+	Listen string `toml:"listen"`
 }
 
 type ConsensusConfig struct {
@@ -143,7 +149,8 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runtime := &nodeRuntime{grpcOnly: *grpcOnly, sm: sm, staking: s, ledger: l}
+	metrics := newNodeMetrics()
+	runtime := &nodeRuntime{grpcOnly: *grpcOnly, sm: sm, staking: s, ledger: l, metrics: metrics}
 	var p2pNode *p2p.Node
 	if !*grpcOnly {
 		p2pNode, err = p2p.New(ctx, kp, p2p.Config{
@@ -163,7 +170,7 @@ func main() {
 			return statemachine.SerializeBlock(block)
 		})
 		catchupCtx, catchupCancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := catchUpCommittedBlocks(catchupCtx, p2pNode, sm, s, cfg.ChainID); err != nil {
+		if err := catchUpCommittedBlocks(catchupCtx, p2pNode, sm, s, cfg.ChainID, metrics); err != nil {
 			catchupCancel()
 			log.Fatalf("Catch up committed blocks: %v", err)
 		}
@@ -174,7 +181,16 @@ func main() {
 		log.Printf("grpc-only mode enabled; skipping P2P/blockloop startup")
 	}
 
-	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, cfg.GRPC.TLSClientCAFile, cfg.ChainID, runtime)
+	metricsServer, metricsAddr, err := startMetricsServer(cfg.Metrics.Listen, runtime, metrics)
+	if err != nil {
+		log.Fatalf("Init metrics server: %v", err)
+	}
+	if metricsServer != nil {
+		defer func() { _ = metricsServer.Shutdown(context.Background()) }()
+		log.Printf("metrics endpoint listening on %s", metricsAddr)
+	}
+
+	grpcServer, grpcAddr, err := startGRPCServer(cfg.GRPC.Listen, cfg.GRPC.TLSCertFile, cfg.GRPC.TLSKeyFile, cfg.GRPC.TLSClientCAFile, cfg.ChainID, runtime, metrics)
 	if err != nil {
 		log.Fatalf("Init gRPC: %v", err)
 	}
@@ -251,6 +267,9 @@ func defaultConfig() Config {
 		GRPC: GRPCConfig{
 			Listen: defaultGRPCListenAddr,
 		},
+		Metrics: MetricsConfig{
+			Listen: defaultMetricsListenAddr,
+		},
 		Consensus: ConsensusConfig{
 			ProposeDelayMS:     defaultProposeDelayMS,
 			ProposeTimeoutMS:   defaultTimeoutMS,
@@ -275,6 +294,9 @@ func normalizeConfig(cfg *Config) {
 	}
 	if strings.TrimSpace(cfg.GRPC.Listen) == "" {
 		cfg.GRPC.Listen = defaultGRPCListenAddr
+	}
+	if strings.TrimSpace(cfg.Metrics.Listen) == "" {
+		cfg.Metrics.Listen = defaultMetricsListenAddr
 	}
 	if strings.TrimSpace(cfg.ChainID) == "" {
 		cfg.ChainID = defaultChainID
@@ -377,7 +399,7 @@ func ensureParentDir(path string) error {
 	return nil
 }
 
-func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string, node nodeRuntimeAPI) (*grpc.Server, string, error) {
+func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string, node nodeRuntimeAPI, metrics *nodeMetrics) (*grpc.Server, string, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, "", fmt.Errorf("listen %s: %w", listenAddr, err)
@@ -423,7 +445,7 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
 	server := grpc.NewServer(serverOpts...)
-	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID, limiter: newSubmitLimiter()})
+	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID, limiter: newSubmitLimiter(), metrics: metrics})
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
@@ -437,7 +459,7 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 	return server, ln.Addr().String(), nil
 }
 
-func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachine.StateMachine, stakingStore *staking.Store, chainID string) error {
+func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachine.StateMachine, stakingStore *staking.Store, chainID string, metrics *nodeMetrics) error {
 	validators, stakes, err := stakingStore.BondedAmounts()
 	if err != nil {
 		return err
@@ -473,10 +495,16 @@ func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachin
 			})
 			candidateCount = 0
 			for _, id := range peers {
+				if metrics != nil {
+					metrics.syncAttempts.Add(1)
+				}
 				requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				rawBlocks, syncErr := node.SyncBlocks(requestCtx, id, from, to)
 				cancel()
 				if syncErr != nil || len(rawBlocks) == 0 {
+					if syncErr != nil && metrics != nil {
+						metrics.syncFailures.Add(1)
+					}
 					continue
 				}
 				decoded, valid := validateSyncedBlocks(rawBlocks, from, validators, stakes, validatorSet, chainID)
@@ -595,6 +623,7 @@ type nodeRuntime struct {
 	staking   *staking.Store
 	ledger    *ledger.Ledger
 	engine    *consensus.Engine
+	metrics   *nodeMetrics
 }
 
 func (n *nodeRuntime) BroadcastTx(t *tx.Tx) error {
