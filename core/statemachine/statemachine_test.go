@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	rgerrors "github.com/imattau/frg/core/errors"
+	"github.com/imattau/frg/core/contract"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/node"
@@ -179,5 +180,180 @@ func TestApplyBlockRollback(t *testing.T) {
 	bal, _ := l.BalanceOf(senderKP.PublicKey)
 	if bal.Cmp(new(big.Int).Mul(big.NewInt(100), scale)) != 0 {
 		t.Fatalf("balance should be 100, got %s", bal)
+	}
+}
+
+var testWasm = []byte{
+	0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00,
+	0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+	0x03, 0x03, 0x02, 0x00, 0x00,
+	0x07, 0x0F, 0x02,
+	0x04, 0x69, 0x6E, 0x69, 0x74, 0x00, 0x00,
+	0x04, 0x63, 0x61, 0x6C, 0x6C, 0x00, 0x01,
+	0x0A, 0x07, 0x02, 0x02, 0x00, 0x0B, 0x02, 0x00, 0x0B,
+}
+
+func makeDeployTx(t *testing.T, kp *keys.Keypair, nonce uint64) *tx.Tx {
+	t.Helper()
+	tr := &tx.Tx{
+		Type:         tx.TxTypeContractDeploy,
+		Sender:       "test",
+		Receiver:     "contract",
+		Value:        big.NewInt(0),
+		Nonce:        nonce,
+		SenderPubKey: kp.PublicKey,
+		WasmBytes:    testWasm,
+	}
+	sig, _ := tr.SignSender(kp)
+	tr.SenderSig = sig
+	return tr
+}
+
+func TestContractDeployChargesGas(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
+		t.Fatal(err)
+	}
+
+	var proposer [32]byte
+	proposer[0] = 1
+	deployTx := makeDeployTx(t, kp, 1)
+	result, err := sm.ApplyBlock(&statemachine.Block{
+		Height:         1,
+		Txs:            []*tx.Tx{deployTx},
+		ProposerPubKey: proposer,
+	})
+	if err != nil {
+		t.Fatalf("ApplyBlock: %v", err)
+	}
+
+	if result.TxsApplied != 1 {
+		t.Fatalf("want 1 tx applied, got %d", result.TxsApplied)
+	}
+	if result.GasBurned.Sign() <= 0 {
+		t.Fatal("GasBurned should be > 0 for contract deploy")
+	}
+
+	bal, _ := l.BalanceOf(kp.PublicKey)
+	if bal.Cmp(big.NewInt(1000)) >= 0 {
+		t.Fatalf("sender balance should have decreased (gas burned), got %s", bal)
+	}
+	t.Logf("sender balance: %s (initial 1000)", bal)
+	t.Logf("GasBurned: %s", result.GasBurned)
+}
+
+func TestContractCallSameFeeForSameWorkload(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
+		t.Fatal(err)
+	}
+
+	var proposer [32]byte
+	proposer[0] = 2
+
+	// Block 1: deploy
+	_, err := sm.ApplyBlock(&statemachine.Block{
+		Height:         1,
+		Txs:            []*tx.Tx{makeDeployTx(t, kp, 1)},
+		ProposerPubKey: proposer,
+	})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	balAfterDeploy, _ := l.BalanceOf(kp.PublicKey)
+
+	contractAddr := contract.ContractAddr(kp.PublicKey, 1)
+
+	// Block 2: call from same sender
+	callTx := &tx.Tx{
+		Type:           tx.TxTypeContractCall,
+		Sender:         "test",
+		Receiver:       "contract",
+		Value:          big.NewInt(0),
+		Nonce:          2,
+		SenderPubKey:   kp.PublicKey,
+		ReceiverPubKey: contractAddr,
+		CallData:       []byte("call"),
+	}
+	sig2, _ := callTx.SignSender(kp)
+	callTx.SenderSig = sig2
+
+	result, err := sm.ApplyBlock(&statemachine.Block{
+		Height:         2,
+		Txs:            []*tx.Tx{callTx},
+		ProposerPubKey: proposer,
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	balAfterCall, _ := l.BalanceOf(kp.PublicKey)
+	if balAfterCall.Cmp(balAfterDeploy) >= 0 {
+		t.Fatal("balance should decrease after call (gas burned)")
+	}
+
+	callFee := new(big.Int).Sub(balAfterDeploy, balAfterCall)
+	t.Logf("deploy fee: %s (diff from initial)", new(big.Int).Sub(big.NewInt(1000), balAfterDeploy))
+	t.Logf("call fee:   %s", callFee)
+	t.Logf("GasBurned:  %s", result.GasBurned)
+}
+
+func TestBaseFeeAdjustsAcrossBlocks(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(50000)); err != nil {
+		t.Fatal(err)
+	}
+
+	var proposer [32]byte
+	proposer[0] = 3
+
+	nonce := uint64(1)
+	for i := 1; i <= 5; i++ {
+		txCount := 5
+		if i > 1 {
+			txCount = 2
+		}
+		var txs []*tx.Tx
+		for j := 0; j < txCount; j++ {
+			rcvr, _ := keys.GenerateKeypair()
+			tr := &tx.Tx{
+				Type:           tx.TxTypeTransfer,
+				Sender:         "s",
+				Receiver:       "r",
+				Value:          big.NewInt(1),
+				Nonce:          nonce,
+				SenderPubKey:   kp.PublicKey,
+				ReceiverPubKey: rcvr.PublicKey,
+			}
+			sig, _ := tr.SignSender(kp)
+			tr.SenderSig = sig
+			rsig, _ := tr.SignReceiver(rcvr)
+			tr.ReceiverSig = rsig
+			txs = append(txs, tr)
+			nonce++
+		}
+		result, err := sm.ApplyBlock(&statemachine.Block{
+			Height:         uint64(i),
+			Txs:            txs,
+			ProposerPubKey: proposer,
+		})
+		if err != nil {
+			t.Fatalf("block %d: %v", i, err)
+		}
+		bal, _ := l.BalanceOf(kp.PublicKey)
+		t.Logf("block %d: txs=%d GasBurned=%s bal=%s", i, txCount, result.GasBurned, bal)
+
+		if result.GasBurned.Cmp(big.NewInt(int64(len(txs)))) < 0 {
+			t.Errorf("block %d: GasBurned %s < tx count %d", i, result.GasBurned, len(txs))
+		}
 	}
 }

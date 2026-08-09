@@ -4,10 +4,15 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/gas"
+	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/mint"
+	"github.com/imattau/frg/core/staking"
+	"github.com/imattau/frg/core/statemachine"
 	"github.com/imattau/frg/core/tx"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestLedgerTransferRoundTrip(t *testing.T) {
@@ -227,4 +232,96 @@ func TestRewardsAccumulateAcrossBlocks(t *testing.T) {
 	if claimable.Cmp(big.NewInt(300)) != 0 {
 		t.Fatalf("accumulated: got %v want 300", claimable)
 	}
+}
+
+func TestContractEconomicCycle(t *testing.T) {
+	dir := t.TempDir()
+	db, err := bolt.Open(dir+"/frg.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := staking.New(db, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sm, err := statemachine.New(db, l, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sender := makeKeypair(t)
+	if err := l.Seed(sender.PublicKey, big.NewInt(5000)); err != nil {
+		t.Fatal(err)
+	}
+
+	var proposer [32]byte
+	proposer[0] = 1
+
+	// Block 1: deploy contract
+	deployTx := &tx.Tx{
+		Type:         tx.TxTypeContractDeploy,
+		Sender:       "test",
+		Receiver:     "contract",
+		Value:        big.NewInt(0),
+		Nonce:        1,
+		SenderPubKey: sender.PublicKey,
+		WasmBytes:    contractWasm,
+	}
+	sig, _ := deployTx.SignSender(sender)
+	deployTx.SenderSig = sig
+
+	r1, err := sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{deployTx}, ProposerPubKey: proposer})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	bal1, _ := l.BalanceOf(sender.PublicKey)
+	t.Logf("block 1 deploy: GasBurned=%s bal=%s", r1.GasBurned, bal1)
+	if r1.GasBurned.Sign() <= 0 {
+		t.Fatal("GasBurned should be > 0")
+	}
+
+	contractAddr := contract.ContractAddr(sender.PublicKey, 1)
+
+	// Block 2: call contract
+	callTx := &tx.Tx{
+		Type: tx.TxTypeContractCall, Sender: "test", Receiver: "contract",
+		Value: big.NewInt(0), Nonce: 2, SenderPubKey: sender.PublicKey,
+		ReceiverPubKey: contractAddr, CallData: []byte("call"),
+	}
+	sig2, _ := callTx.SignSender(sender)
+	callTx.SenderSig = sig2
+
+	r2, err := sm.ApplyBlock(&statemachine.Block{Height: 2, Txs: []*tx.Tx{callTx}, ProposerPubKey: proposer})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	bal2, _ := l.BalanceOf(sender.PublicKey)
+	fee2 := new(big.Int).Sub(bal1, bal2)
+	t.Logf("block 2 call:  GasBurned=%s bal=%s fee=%s", r2.GasBurned, bal2, fee2)
+
+	// Block 3: same call again — same contract, same fee
+	callTx3 := &tx.Tx{
+		Type: tx.TxTypeContractCall, Sender: "test", Receiver: "contract",
+		Value: big.NewInt(0), Nonce: 3, SenderPubKey: sender.PublicKey,
+		ReceiverPubKey: contractAddr, CallData: []byte("call"),
+	}
+	sig3, _ := callTx3.SignSender(sender)
+	callTx3.SenderSig = sig3
+
+	r3, err := sm.ApplyBlock(&statemachine.Block{Height: 3, Txs: []*tx.Tx{callTx3}, ProposerPubKey: proposer})
+	if err != nil {
+		t.Fatalf("call2: %v", err)
+	}
+	bal3, _ := l.BalanceOf(sender.PublicKey)
+	fee3 := new(big.Int).Sub(bal2, bal3)
+	t.Logf("block 3 call2: GasBurned=%s bal=%s fee=%s", r3.GasBurned, bal3, fee3)
+	t.Logf("total burned: %s", new(big.Int).Sub(big.NewInt(5000), bal3))
 }

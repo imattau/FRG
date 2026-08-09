@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/imattau/frg/core/contract"
 	"github.com/imattau/frg/core/gas"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
@@ -183,5 +184,26 @@ func TestClaimable(t *testing.T) {
 	}
 	if bal.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("claimable: got %v want 100", bal)
+	}
+}
+
+func TestFuelToGasConversion(t *testing.T) {
+	// FuelUnitsPerGas = 1000. Gas = floor(fuel / 1000).
+	tests := []struct {
+		fuel   uint64
+		expect uint64
+	}{
+		{1000, 1},
+		{999, 0},
+		{1999, 1},
+		{2500, 2},
+		{0, 0},
+		{1000000, 1000},
+	}
+	for _, tc := range tests {
+		got := tc.fuel / contract.FuelUnitsPerGas
+		if got != tc.expect {
+			t.Errorf("fuel=%d: got %d gas, want %d", tc.fuel, got, tc.expect)
+		}
 	}
 }
