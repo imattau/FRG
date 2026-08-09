@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"os"
 	"os/signal"
@@ -460,54 +463,63 @@ func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachin
 		if to < from {
 			to = ^uint64(0)
 		}
-		advanced := false
-		for _, id := range peers {
-			blocks, syncErr := node.SyncBlocks(ctx, id, from, to)
-			if syncErr != nil || len(blocks) == 0 {
-				continue
+		var selected []*statemachine.Block
+		var selectedCount int
+		candidateCount := 0
+		for attempt := 0; attempt < 3 && selected == nil; attempt++ {
+			candidates := make(map[[32]byte]struct {
+				blocks []*statemachine.Block
+				count  int
+			})
+			candidateCount = 0
+			for _, id := range peers {
+				requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				rawBlocks, syncErr := node.SyncBlocks(requestCtx, id, from, to)
+				cancel()
+				if syncErr != nil || len(rawBlocks) == 0 {
+					continue
+				}
+				decoded, valid := validateSyncedBlocks(rawBlocks, from, validators, stakes, validatorSet, chainID)
+				if !valid {
+					continue
+				}
+				candidateCount++
+				key := syncedBlockRangeKey(rawBlocks)
+				candidate := candidates[key]
+				candidate.blocks = decoded
+				candidate.count++
+				candidates[key] = candidate
 			}
-			decoded := make([]*statemachine.Block, 0, len(blocks))
-			valid := true
-			for i, raw := range blocks {
-				block, decodeErr := statemachine.DeserializeBlock(raw)
-				if decodeErr != nil || block.Height != from+uint64(i) {
-					valid = false
-					break
-				}
-				proposal, proposalErr := consensus.DeserializeProposal(block.ProposalBytes)
-				if proposalErr != nil || !consensus.VerifyProposalForChain(proposal, chainID) {
-					valid = false
-					break
-				}
-				if _, ok := validatorSet[proposal.ProposerPK]; !ok || proposal.Height != block.Height || proposal.ProposerPK != block.ProposerPubKey || proposal.PrevStateRoot != block.PrevStateRoot {
-					valid = false
-					break
-				}
-				proposalTxs, txErr := tx.SerializeBatch(proposal.Txs)
-				blockTxs, blockErr := tx.SerializeBatch(block.Txs)
-				if txErr != nil || blockErr != nil || !bytes.Equal(proposalTxs, blockTxs) {
-					valid = false
-					break
-				}
-				if attestationErr := consensus.VerifyAttestationForChain(&proposal.PrevAttestations, validators, stakes, chainID); attestationErr != nil && len(proposal.PrevAttestations.Votes) > 0 {
-					valid = false
-					break
-				}
-				decoded = append(decoded, block)
-			}
-			if !valid {
-				continue
-			}
-			for _, block := range decoded {
-				if _, applyErr := sm.ApplyBlockForChain(block, chainID); applyErr != nil {
-					return fmt.Errorf("apply synced block %d: %w", block.Height, applyErr)
+			for _, candidate := range candidates {
+				if candidate.count > selectedCount {
+					selected = candidate.blocks
+					selectedCount = candidate.count
 				}
 			}
-			advanced = true
-			break
+			if selected != nil && (candidateCount == 1 || selectedCount >= 2) {
+				break
+			}
+			selected = nil
+			selectedCount = 0
+			if attempt < 2 {
+				delay := time.Duration(1<<attempt) * 100 * time.Millisecond
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(delay):
+				}
+			}
 		}
-		if !advanced {
-			return nil
+		if selected == nil {
+			if candidateCount == 0 {
+				return nil
+			}
+			return fmt.Errorf("connected peers did not agree on blocks at height %d", from)
+		}
+		for _, block := range selected {
+			if _, applyErr := sm.ApplyBlockForChain(block, chainID); applyErr != nil {
+				return fmt.Errorf("apply synced block %d: %w", block.Height, applyErr)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -515,6 +527,46 @@ func catchUpCommittedBlocks(ctx context.Context, node *p2p.Node, sm *statemachin
 		default:
 		}
 	}
+}
+
+func validateSyncedBlocks(rawBlocks [][]byte, from uint64, validators [][32]byte, stakes []*big.Int, validatorSet map[[32]byte]struct{}, chainID string) ([]*statemachine.Block, bool) {
+	decoded := make([]*statemachine.Block, 0, len(rawBlocks))
+	for i, raw := range rawBlocks {
+		block, err := statemachine.DeserializeBlock(raw)
+		if err != nil || block.Height != from+uint64(i) {
+			return nil, false
+		}
+		proposal, err := consensus.DeserializeProposal(block.ProposalBytes)
+		if err != nil || !consensus.VerifyProposalForChain(proposal, chainID) {
+			return nil, false
+		}
+		if _, ok := validatorSet[proposal.ProposerPK]; !ok || proposal.Height != block.Height || proposal.ProposerPK != block.ProposerPubKey || proposal.PrevStateRoot != block.PrevStateRoot {
+			return nil, false
+		}
+		proposalTxs, txErr := tx.SerializeBatch(proposal.Txs)
+		blockTxs, blockErr := tx.SerializeBatch(block.Txs)
+		if txErr != nil || blockErr != nil || !bytes.Equal(proposalTxs, blockTxs) {
+			return nil, false
+		}
+		if len(proposal.PrevAttestations.Votes) > 0 {
+			if err := consensus.VerifyAttestationForChain(&proposal.PrevAttestations, validators, stakes, chainID); err != nil {
+				return nil, false
+			}
+		}
+		decoded = append(decoded, block)
+	}
+	return decoded, true
+}
+
+func syncedBlockRangeKey(blocks [][]byte) [32]byte {
+	hash := sha256.New()
+	for _, block := range blocks {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(block)))
+		hash.Write(size[:])
+		hash.Write(block)
+	}
+	return sha256.Sum256(hash.Sum(nil))
 }
 
 func requiresGRPCTLS(listenAddr string) bool {
