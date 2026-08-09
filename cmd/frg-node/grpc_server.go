@@ -3,10 +3,79 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
+
+const (
+	submitWindow          = time.Second
+	maxSubmitTxPerPeer    = 2048
+	maxSubmitReqsPerPeer  = 128
+	maxTrackedSubmitPeers = 4096
+)
+
+type submitWindowState struct {
+	started  time.Time
+	txs      int
+	requests int
+}
+
+type submitLimiter struct {
+	mu    sync.Mutex
+	peers map[string]submitWindowState
+	now   func() time.Time
+}
+
+func newSubmitLimiter() *submitLimiter {
+	return &submitLimiter{peers: make(map[string]submitWindowState), now: time.Now}
+}
+
+func (l *submitLimiter) allow(ctx context.Context, txCount int) error {
+	if l == nil {
+		return nil
+	}
+	if txCount < 1 || txCount > maxSubmitTxPerPeer {
+		return status.Error(codes.ResourceExhausted, "submission rate limit exceeded")
+	}
+	key := "unknown"
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		key = p.Addr.String()
+	}
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state, ok := l.peers[key]
+	if !ok {
+		if len(l.peers) >= maxTrackedSubmitPeers {
+			for peerKey, peerState := range l.peers {
+				if now.Sub(peerState.started) >= submitWindow {
+					delete(l.peers, peerKey)
+				}
+			}
+			if len(l.peers) >= maxTrackedSubmitPeers {
+				return status.Error(codes.ResourceExhausted, "too many submission clients")
+			}
+		}
+		state = submitWindowState{started: now}
+	}
+	if now.Sub(state.started) >= submitWindow {
+		state = submitWindowState{started: now}
+	}
+	if state.requests >= maxSubmitReqsPerPeer || state.txs+txCount > maxSubmitTxPerPeer {
+		l.peers[key] = state
+		return status.Error(codes.ResourceExhausted, "submission rate limit exceeded")
+	}
+	state.requests++
+	state.txs += txCount
+	l.peers[key] = state
+	return nil
+}
 
 type nodeAPI interface {
 	BroadcastTx(*tx.Tx) error
@@ -30,12 +99,18 @@ type nodeGRPCServer struct {
 	stat    nodeStatusAPI
 	query   nodeQueryAPI
 	chainID string
+	limiter *submitLimiter
 }
 
 func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frgpb.SubmitResponse, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if in == nil || len(in.Data) > tx.MaxSerializedBytes {
 		return &frgpb.SubmitResponse{Ok: false, Error: "transaction payload exceeds size limit"}, nil
+	}
+	if err := s.limiter.allow(ctx, 1); err != nil {
+		return nil, err
 	}
 
 	t, err := tx.Deserialize(in.Data)
@@ -45,6 +120,9 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 	if err := t.VerifySigsForChain(s.chainID); err != nil {
 		return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := s.node.BroadcastTx(t); err != nil {
 		return &frgpb.SubmitResponse{Ok: false, Error: err.Error()}, nil
 	}
@@ -52,13 +130,21 @@ func (s *nodeGRPCServer) SubmitTx(ctx context.Context, in *frgpb.RawBytes) (*frg
 }
 
 func (s *nodeGRPCServer) SubmitBatch(ctx context.Context, in *frgpb.RawBytesArray) (*frgpb.SubmitResponse, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if in == nil || len(in.Data) == 0 || len(in.Data) > 1024 {
 		return &frgpb.SubmitResponse{Ok: false, Error: "batch size is invalid"}, nil
+	}
+	if err := s.limiter.allow(ctx, len(in.Data)); err != nil {
+		return nil, err
 	}
 
 	batch := make([]*tx.Tx, 0, len(in.Data))
 	for _, raw := range in.Data {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(raw) > tx.MaxSerializedBytes {
 			return &frgpb.SubmitResponse{Ok: false, Error: "transaction payload exceeds size limit"}, nil
 		}
@@ -106,7 +192,7 @@ func (s *nodeGRPCServer) GetAccount(_ context.Context, req *frgpb.AccountRequest
 	if s.query == nil {
 		return nil, fmt.Errorf("query backend not available")
 	}
-	if len(req.Pubkey) != 32 {
+	if req == nil || len(req.Pubkey) != 32 {
 		return nil, fmt.Errorf("pubkey must be 32 bytes")
 	}
 	var pubkey [32]byte

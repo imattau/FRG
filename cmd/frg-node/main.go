@@ -406,7 +406,7 @@ func startGRPCServer(listenAddr, certFile, keyFile, clientCAFile, chainID string
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
 	server := grpc.NewServer(serverOpts...)
-	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID})
+	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node, chainID: chainID, limiter: newSubmitLimiter()})
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 	grpc_health_v1.RegisterHealthServer(server, healthServer)

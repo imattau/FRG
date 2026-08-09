@@ -11,7 +11,10 @@ import (
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -183,6 +186,27 @@ func TestNodeGRPCSubmitBatch(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for broadcast batch")
+	}
+}
+
+func TestSubmitLimiterBoundsRequestsPerPeer(t *testing.T) {
+	now := time.Unix(100, 0)
+	limiter := newSubmitLimiter()
+	limiter.now = func() time.Time { return now }
+	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 50051}})
+
+	for i := 0; i < maxSubmitReqsPerPeer; i++ {
+		if err := limiter.allow(ctx, 1); err != nil {
+			t.Fatalf("request %d unexpectedly rejected: %v", i, err)
+		}
+	}
+	if err := limiter.allow(ctx, 1); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("want ResourceExhausted after request limit, got %v", err)
+	}
+
+	now = now.Add(submitWindow)
+	if err := limiter.allow(ctx, maxSubmitTxPerPeer); err != nil {
+		t.Fatalf("new window unexpectedly rejected: %v", err)
 	}
 }
 
