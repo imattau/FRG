@@ -516,6 +516,9 @@ func parseAmountFields(frgRaw, quantaRaw, label string, positive bool) (*big.Int
 }
 
 func contractCallData(req contractCallRequest) ([]byte, error) {
+	if req.CallDataHex != "" && req.Function != "" {
+		return nil, fmt.Errorf("use function or call_data_hex, not both")
+	}
 	if req.CallDataHex != "" {
 		data, err := hex.DecodeString(req.CallDataHex)
 		if err != nil {

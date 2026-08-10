@@ -162,6 +162,20 @@ func TestWorkActionCalldataAppendsPayload(t *testing.T) {
 	}
 }
 
+func TestContractCallDataRejectsAmbiguousSelectorAndRawCalldata(t *testing.T) {
+	if _, err := contractCallData("sett", "0102"); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("expected mutually exclusive contract call fields error, got %v", err)
+	}
+	got, err := contractCallData("sett", "")
+	if err != nil || string(got) != "sett" {
+		t.Fatalf("function calldata = %x, err=%v", got, err)
+	}
+	got, err = contractCallData("", "736574740102")
+	if err != nil || string(got) != "sett\x01\x02" {
+		t.Fatalf("raw calldata = %x, err=%v", got, err)
+	}
+}
+
 func TestBuildWorkTermsStableHash(t *testing.T) {
 	terms := workTerms{
 		Description:        "render report",

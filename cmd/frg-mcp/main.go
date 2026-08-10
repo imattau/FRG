@@ -828,6 +828,9 @@ func decodeKey(keyText, keyHex string) ([]byte, error) {
 }
 
 func contractCallData(function, callDataHex string) ([]byte, error) {
+	if function != "" && callDataHex != "" {
+		return nil, fmt.Errorf("use function or call_data_hex, not both")
+	}
 	if callDataHex != "" {
 		data, err := hex.DecodeString(callDataHex)
 		if err != nil {
