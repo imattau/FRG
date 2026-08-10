@@ -462,6 +462,9 @@ func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) {
 		return
 	}
 	v.Sig = sig
+	// Gossip subscriptions do not provide a reliable local loopback. Count
+	// this engine's vote locally as well as publishing it to peers.
+	rs.Prevotes[e.kp.PublicKey] = *v
 	data, err := v.Serialize()
 	if err != nil {
 		return
@@ -483,6 +486,7 @@ func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
 		return
 	}
 	v.Sig = sig
+	rs.Precommits[e.kp.PublicKey] = *v
 	data, err := v.Serialize()
 	if err != nil {
 		return

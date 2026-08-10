@@ -10,6 +10,7 @@ import (
 
 	"github.com/imattau/frg/core/blockloop"
 	"github.com/imattau/frg/core/consensus"
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/p2p"
@@ -117,9 +118,19 @@ func BenchmarkConsensusScaling(b *testing.B) {
 			}()
 
 			for _, target := range nodes {
+				totalSupply := big.NewInt(0)
 				for _, v := range nodes {
-					target.ledger.Seed(v.kp.PublicKey, big.NewInt(9000))
-					target.staking.Bond(v.kp.PublicKey, big.NewInt(1000), 0)
+					balance := new(big.Int).Mul(big.NewInt(9000), denom.QuantaPerFRG)
+					target.ledger.Seed(v.kp.PublicKey, balance)
+					totalSupply.Add(totalSupply, balance)
+					if err := target.staking.Bond(v.kp.PublicKey, new(big.Int).Mul(big.NewInt(1000), denom.QuantaPerFRG), 0); err != nil {
+						b.Fatalf("bond benchmark validator: %v", err)
+					}
+				}
+				if err := target.sm.Update(func(btx *bolt.Tx) error {
+					return target.sm.SetTotalSupplyTx(btx, totalSupply)
+				}); err != nil {
+					b.Fatalf("set benchmark total supply: %v", err)
 				}
 			}
 
@@ -128,7 +139,9 @@ func BenchmarkConsensusScaling(b *testing.B) {
 					if i == j {
 						continue
 					}
-					nodes[i].p2p.Connect(ctx, nodes[j].p2p.Addrs())
+					if err := nodes[i].p2p.Connect(ctx, nodes[j].p2p.Addrs()); err != nil {
+						b.Fatalf("connect benchmark nodes: %v", err)
+					}
 				}
 			}
 
@@ -145,6 +158,11 @@ func BenchmarkConsensusScaling(b *testing.B) {
 
 			sender := benchKeypair(b)
 			receiver := benchKeypair(b)
+			for _, n := range nodes {
+				if err := n.ledger.Seed(sender.PublicKey, new(big.Int).Mul(big.NewInt(9000), denom.QuantaPerFRG)); err != nil {
+					b.Fatalf("seed benchmark sender: %v", err)
+				}
+			}
 
 			b.ResetTimer()
 			b.ReportAllocs()
@@ -158,6 +176,10 @@ func BenchmarkConsensusScaling(b *testing.B) {
 				for !reached {
 					select {
 					case <-timeout:
+						for i, n := range nodes {
+							h, _ := n.sm.CurrentHeight()
+							b.Logf("node %d: height=%d peers=%d consensus=%+v mempool=%d", i, h, n.p2p.PeerCount(), n.engine.Status(), n.bl.Len())
+						}
 						b.Fatalf("consensus timeout at height %d for %d nodes", targetHeight, numNodes)
 					case <-ticker.C:
 						allReached := true
