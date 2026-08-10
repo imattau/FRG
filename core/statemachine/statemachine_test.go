@@ -695,6 +695,50 @@ func TestContractDeployChargesGas(t *testing.T) {
 	t.Logf("GasBurned: %s", result.GasBurned)
 }
 
+func TestApplyBlockPersistsExactBlockTelemetry(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, big.NewInt(1000))
+
+	var proposer [32]byte
+	proposer[0] = 9
+	if _, err := sm.ApplyBlock(&statemachine.Block{
+		Height:         1,
+		Txs:            []*tx.Tx{makeDeployTx(t, kp, 1)},
+		ProposerPubKey: proposer,
+	}); err != nil {
+		t.Fatalf("ApplyBlock: %v", err)
+	}
+
+	telemetry, err := sm.BlockTelemetryAt(1)
+	if err != nil {
+		t.Fatalf("BlockTelemetryAt: %v", err)
+	}
+	if telemetry == nil {
+		t.Fatal("missing persisted telemetry")
+	}
+	if !telemetry.ContractStateIncluded {
+		t.Fatal("contract state should be included in persisted telemetry")
+	}
+	if telemetry.Warning != "" {
+		t.Fatalf("unexpected warning: %s", telemetry.Warning)
+	}
+	if telemetry.TxCount != 1 || len(telemetry.Levels) == 0 {
+		t.Fatalf("unexpected telemetry: %+v", telemetry)
+	}
+	if telemetry.Levels[0].ContractNodeCount == 0 {
+		t.Fatalf("contract nodes missing from level 0 telemetry: %+v", telemetry.Levels[0])
+	}
+	if telemetry.Levels[0].ContractTxCount != 1 {
+		t.Fatalf("contract tx count = %d, want 1", telemetry.Levels[0].ContractTxCount)
+	}
+}
+
 func TestContractCallSameFeeForSameWorkload(t *testing.T) {
 	sm, db := openSM(t)
 	l, _ := ledger.New(db)

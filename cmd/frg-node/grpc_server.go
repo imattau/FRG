@@ -3,14 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/big"
-	"sort"
 	"sync"
 	"time"
 
-	"github.com/imattau/frg/core/node"
 	"github.com/imattau/frg/core/statemachine"
-	"github.com/imattau/frg/core/tree"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
 	"google.golang.org/grpc/codes"
@@ -301,170 +297,53 @@ func (s *nodeGRPCServer) GetBlockTelemetry(ctx context.Context, req *frgpb.Block
 }
 
 func blockTelemetry(block *statemachine.Block) (*frgpb.BlockTelemetryResponse, error) {
-	if block == nil {
-		return nil, fmt.Errorf("block not found")
-	}
-	tr, err := tree.BuildTree(block.Txs, nil)
+	telemetry, err := statemachine.BuildBlockTelemetry(block, nil, false)
 	if err != nil {
 		return nil, err
 	}
-	total := big.NewInt(0)
-	sumSquares := big.NewInt(0)
-	txTypes := make(map[tx.TxType]uint64)
-	for _, t := range block.Txs {
-		txTypes[t.Type]++
-		if t.Value == nil {
-			continue
-		}
-		total.Add(total, t.Value)
-		sq := new(big.Int).Mul(t.Value, t.Value)
-		sumSquares.Add(sumSquares, sq)
-	}
-
-	mean := big.NewInt(0)
-	variance := big.NewInt(0)
-	if len(block.Txs) > 0 {
-		count := big.NewInt(int64(len(block.Txs)))
-		mean.Div(new(big.Int).Set(total), count)
-		avgSquares := new(big.Int).Div(sumSquares, count)
-		meanSquare := new(big.Int).Mul(mean, mean)
-		variance.Sub(avgSquares, meanSquare)
-		if variance.Sign() < 0 {
-			variance.SetInt64(0)
-		}
-	}
-
-	out := &frgpb.BlockTelemetryResponse{
-		Height:                block.Height,
-		StateRoot:             block.StateRoot[:],
-		ProposerPubkey:        block.ProposerPubKey[:],
-		TxCount:               uint64(len(block.Txs)),
-		TotalValue:            total.String(),
-		MeanValue:             mean.String(),
-		Variance:              variance.String(),
-		TxTypes:               formatTxTypeCounts(txTypes),
-		Levels:                formatRGLevels(tr),
-		ContractStateIncluded: false,
-	}
-	for _, t := range block.Txs {
-		if t.Type == tx.TxTypeContractDeploy || t.Type == tx.TxTypeContractCall {
-			out.Warning = "historical contract-state RG nodes are not persisted yet; telemetry reconstructs transaction structure only"
-			break
-		}
-	}
-	return out, nil
+	return protoBlockTelemetry(telemetry), nil
 }
 
-func formatTxTypeCounts(counts map[tx.TxType]uint64) []*frgpb.TxTypeCount {
-	types := make([]int, 0, len(counts))
-	for typ := range counts {
-		types = append(types, int(typ))
-	}
-	sort.Ints(types)
-	out := make([]*frgpb.TxTypeCount, 0, len(types))
-	for _, typ := range types {
-		t := tx.TxType(typ)
-		out = append(out, &frgpb.TxTypeCount{Type: uint32(t), Name: txTypeName(t), Count: counts[t]})
-	}
-	return out
-}
-
-func formatRGLevels(tr *tree.Tree) []*frgpb.RGLevelTelemetry {
-	levels := make([]*frgpb.RGLevelTelemetry, 0, tr.LayerCount())
-	for level := 0; level < tr.LayerCount(); level++ {
-		layer := tr.Layer(level)
-		scale := uint32(0)
-		if len(layer) > 0 {
-			scale = layer[0].Scale
+func protoBlockTelemetry(telemetry *statemachine.BlockTelemetry) *frgpb.BlockTelemetryResponse {
+	levels := make([]*frgpb.RGLevelTelemetry, 0, len(telemetry.Levels))
+	for _, level := range telemetry.Levels {
+		sigs := make([]*frgpb.SignatureCount, 0, len(level.SignatureCounts))
+		for _, sig := range level.SignatureCounts {
+			sigs = append(sigs, &frgpb.SignatureCount{
+				Signature: sig.Signature,
+				Name:      sig.Name,
+				Count:     sig.Count,
+			})
 		}
-		_, contractNodes, density := tr.ContractDensity(level)
 		levels = append(levels, &frgpb.RGLevelTelemetry{
-			Level:             uint32(level),
-			Scale:             scale,
-			NodeCount:         uint64(len(layer)),
-			SignatureCounts:   formatSignatureCounts(tr.SignatureHistogram(level)),
-			ContractDensity:   density,
-			VolatileRegions:   intSliceToUint64(tr.VolatilityRegions(level)),
-			StagnantRegions:   intSliceToUint64(tr.StagnantRegions(level)),
-			TotalVolume:       levelVolume(layer).String(),
-			Variance:          levelVariance(layer).String(),
-			ContractTxCount:   uint64(contractNodes),
-			ContractNodeCount: uint64(contractNodes),
+			Level:             level.Level,
+			Scale:             level.Scale,
+			NodeCount:         level.NodeCount,
+			SignatureCounts:   sigs,
+			ContractDensity:   level.ContractDensity,
+			VolatileRegions:   append([]uint64(nil), level.VolatileRegions...),
+			StagnantRegions:   append([]uint64(nil), level.StagnantRegions...),
+			TotalVolume:       level.TotalVolume,
+			Variance:          level.Variance,
+			ContractTxCount:   level.ContractTxCount,
+			ContractNodeCount: level.ContractNodeCount,
 		})
 	}
-	return levels
-}
-
-func formatSignatureCounts(counts map[node.Signature]int) []*frgpb.SignatureCount {
-	sigs := make([]int, 0, len(counts))
-	for sig := range counts {
-		sigs = append(sigs, int(sig))
+	txTypes := make([]*frgpb.TxTypeCount, 0, len(telemetry.TxTypes))
+	for _, typ := range telemetry.TxTypes {
+		txTypes = append(txTypes, &frgpb.TxTypeCount{Type: typ.Type, Name: typ.Name, Count: typ.Count})
 	}
-	sort.Ints(sigs)
-	out := make([]*frgpb.SignatureCount, 0, len(sigs))
-	for _, sig := range sigs {
-		s := node.Signature(sig)
-		out = append(out, &frgpb.SignatureCount{Signature: uint32(s), Name: signatureName(s), Count: uint64(counts[s])})
-	}
-	return out
-}
-
-func levelVolume(layer []*node.RGNode) *big.Int {
-	total := big.NewInt(0)
-	for _, n := range layer {
-		total.Add(total, node.BytesToUint256(n.Volume))
-	}
-	return total
-}
-
-func levelVariance(layer []*node.RGNode) *big.Int {
-	total := big.NewInt(0)
-	for _, n := range layer {
-		total.Add(total, node.BytesToUint256(n.Variance))
-	}
-	return total
-}
-
-func intSliceToUint64(in []int) []uint64 {
-	out := make([]uint64, len(in))
-	for i, v := range in {
-		out[i] = uint64(v)
-	}
-	return out
-}
-
-func txTypeName(t tx.TxType) string {
-	switch t {
-	case tx.TxTypeTransfer:
-		return "transfer"
-	case tx.TxTypeMissEvidence:
-		return "miss_evidence"
-	case tx.TxTypeContractDeploy:
-		return "contract_deploy"
-	case tx.TxTypeContractCall:
-		return "contract_call"
-	case tx.TxTypeBond:
-		return "bond"
-	default:
-		return fmt.Sprintf("unknown_%d", t)
-	}
-}
-
-func signatureName(sig node.Signature) string {
-	switch sig {
-	case node.SigAtomic:
-		return "atomic"
-	case node.SigNullPad:
-		return "null_pad"
-	case node.SigStagnantState:
-		return "stagnant_state"
-	case node.SigLaminarFlow:
-		return "laminar_flow"
-	case node.SigVolatileShock:
-		return "volatile_shock"
-	case node.SigContract:
-		return "contract"
-	default:
-		return fmt.Sprintf("unknown_%d", sig)
+	return &frgpb.BlockTelemetryResponse{
+		Height:                telemetry.Height,
+		StateRoot:             telemetry.StateRoot[:],
+		ProposerPubkey:        telemetry.ProposerPubKey[:],
+		TxCount:               telemetry.TxCount,
+		TotalValue:            telemetry.TotalValue,
+		MeanValue:             telemetry.MeanValue,
+		Variance:              telemetry.Variance,
+		TxTypes:               txTypes,
+		Levels:                levels,
+		ContractStateIncluded: telemetry.ContractStateIncluded,
+		Warning:               telemetry.Warning,
 	}
 }

@@ -68,7 +68,10 @@ func New(db *bolt.DB, l *ledger.Ledger, s *staking.Store) (*StateMachine, error)
 		if _, err := btx.CreateBucketIfNotExists([]byte("contract_state")); err != nil {
 			return err
 		}
-		_, err = btx.CreateBucketIfNotExists(blocksBucket)
+		if _, err := btx.CreateBucketIfNotExists(blocksBucket); err != nil {
+			return err
+		}
+		_, err = btx.CreateBucketIfNotExists(blockTelemetryBucket)
 		return err
 	}); err != nil {
 		return nil, err
@@ -360,10 +363,11 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 		}
 
 		// 2. Build the RG state root from txs + contract state nodes.
-		root, err := tree.BuildTreeRoot(b.Txs, contractNodes)
+		rgTree, err := tree.BuildTree(b.Txs, contractNodes)
 		if err != nil {
 			return err
 		}
+		root := rgTree.Root()
 		stateRoot = root
 
 		// 3. Charge gas per tx: base gas (1 unit) + contract compute gas (fuel/FuelUnitsPerGas).
@@ -440,6 +444,10 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 				"committed block state root does not match computed state root")
 		}
 		b.StateRoot = stateRoot
+		telemetry := buildBlockTelemetryFromTree(b, rgTree, true)
+		if err := putBlockTelemetryTx(btx, telemetry); err != nil {
+			return err
+		}
 		return putBlockTx(btx, b)
 	}); err != nil {
 		return nil, err

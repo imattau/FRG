@@ -101,7 +101,7 @@ Use `frg_get_block_telemetry` to inspect the FRG RG structure for a committed bl
 
 Height `0` or an empty height means the latest committed block. The response includes transaction counts, value totals, transaction type counts, per-level signature histograms, contract density, volatility regions, and stagnant regions. This gives agents and operators direct access to the information FRG already derives while building state roots.
 
-Current limitation: historical block telemetry is reconstructed from persisted transactions. If the block included contract deploys or calls, the response warns that historical contract-state RG nodes are not included yet. Persisting exact retained-tree summaries at block commit time is the next step if operators need full historical contract-state density without recomputation or approximation.
+Newly committed blocks persist an exact compact telemetry summary, including touched contract-state RG nodes. Older blocks from before telemetry persistence are reconstructed from persisted transactions; if such a block included contract deploys or calls, the response warns that contract-state RG nodes are not available for that historical block.
 
 ## Agent Work Contracts
 

@@ -1183,6 +1183,13 @@ func (n *nodeRuntime) GetBlockTelemetry(height uint64) (*frgpb.BlockTelemetryRes
 	if height == 0 {
 		return nil, fmt.Errorf("no committed block after genesis")
 	}
+	telemetry, err := n.sm.BlockTelemetryAt(height)
+	if err != nil {
+		return nil, fmt.Errorf("load block telemetry %d: %w", height, err)
+	}
+	if telemetry != nil {
+		return protoBlockTelemetry(telemetry), nil
+	}
 	block, err := n.sm.BlockAt(height)
 	if err != nil {
 		return nil, fmt.Errorf("load block %d: %w", height, err)
