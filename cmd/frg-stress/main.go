@@ -83,9 +83,35 @@ func main() {
 		cancel()
 	}()
 
-	ticker := time.NewTicker(time.Second / time.Duration(*rate/len(accounts)+1))
-	defer ticker.Stop()
+	// A small pool of shared connections, not one dial per transaction
+	// (the original approach) and not a single shared connection either
+	// (tried in between): dialing fresh per submission meant this tool's
+	// own TCP/HTTP2 handshake churn -- hundreds of thousands of them over
+	// a real run -- competed for CPU/OS resources with the node under
+	// test, dwarfing the actual transaction traffic being measured. A
+	// single connection avoids that but hits HTTP/2's own per-connection
+	// concurrent-stream ceiling under 200 goroutines hammering it at
+	// once, throttling measured throughput to a hard, artificial ~128/s
+	// regardless of what the chain can actually sustain. A small pool
+	// gives each account real concurrency headroom without either
+	// problem.
+	const connPoolSize = 16
+	clients := make([]frgpb.FRGClient, connPoolSize)
+	for i := range clients {
+		conn, err := dialNode(*addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dial %s: %v\n", *addr, err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+		clients[i] = frgpb.NewFRGClient(conn)
+	}
 
+	// Each account goroutine needs its own ticker -- a single ticker
+	// shared across all of them (the previous approach) delivers each
+	// tick to only one goroutine at a time, so total throughput was
+	// capped at the ticker's own rate no matter how many accounts were
+	// used, instead of scaling with account count as --rate intends.
 	deadline := time.After(*duration)
 
 	var wg sync.WaitGroup
@@ -94,11 +120,15 @@ func main() {
 		go func(idx int, sender *keys.Keypair) {
 			defer wg.Done()
 
-			nonce, err := getNonce(*addr, sender.PublicKey)
+			client := clients[idx%len(clients)]
+			nonce, err := getNonce(client, sender.PublicKey)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[acct %d] get nonce: %v\n", idx, err)
 				return
 			}
+
+			ticker := time.NewTicker(time.Second / time.Duration(*rate/len(accounts)+1))
+			defer ticker.Stop()
 
 			count := 0
 			for count < *txPerAccount {
@@ -147,7 +177,7 @@ func main() {
 				}
 
 				tstart := time.Now()
-				if err := submitTx(*addr, txBytes); err != nil {
+				if err := submitTx(client, txBytes); err != nil {
 					st.failed.Add(1)
 					continue
 				}
@@ -169,14 +199,7 @@ func main() {
 	printSummary(st)
 }
 
-func getNonce(addr string, pubkey [32]byte) (uint64, error) {
-	conn, err := dialNode(addr)
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-
-	client := frgpb.NewFRGClient(conn)
+func getNonce(client frgpb.FRGClient, pubkey [32]byte) (uint64, error) {
 	resp, err := client.GetAccount(context.Background(), &frgpb.AccountRequest{Pubkey: pubkey[:]}, callOpt()...)
 	if err != nil {
 		return 0, err
@@ -184,14 +207,7 @@ func getNonce(addr string, pubkey [32]byte) (uint64, error) {
 	return resp.Nonce, nil
 }
 
-func submitTx(addr string, txBytes []byte) error {
-	conn, err := dialNode(addr)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	client := frgpb.NewFRGClient(conn)
+func submitTx(client frgpb.FRGClient, txBytes []byte) error {
 	resp, err := client.SubmitTx(context.Background(), &frgpb.RawBytes{Data: txBytes}, callOpt()...)
 	if err != nil {
 		return err
