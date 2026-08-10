@@ -19,8 +19,11 @@ const DefaultChainID = "frg-mainnet-1"
 const MaxSerializedBytes = maxTxBytes
 
 const (
-	maxBatchTxs   = 1024
-	maxBatchBytes = 8 << 20
+	// maxBatchTxs must match blockloop.TMax / consensus.maxProposalTxs (the
+	// documented per-block capacity of 65536 txs); a lower cap here rejects
+	// every full block proposal at the batch-serialization layer.
+	maxBatchTxs   = 65536
+	maxBatchBytes = 32 << 20
 )
 
 // MaxBatchBytes is the maximum accepted serialized transaction batch size.

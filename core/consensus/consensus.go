@@ -341,14 +341,20 @@ func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte, validators
 	if rs.Phase != PhasePropose {
 		return
 	}
+	data, err := SerializeProposal(p)
+	if err != nil {
+		// rs.Phase must stay PhasePropose here: if we advanced it before
+		// this could fail, a serialization error would strand the round in
+		// PhasePrevote with no prevote ever cast and no timer armed to
+		// recover it, since onProposeTimeout's phase guard would then
+		// silently no-op forever. Leaving Phase untouched lets the
+		// propose-timeout fallback fire normally.
+		return
+	}
 	rs.Proposal = p
 	rs.Phase = PhasePrevote
 	e.setStatus(rs)
 	persistRoundState(e.sm, rs)
-	data, err := SerializeProposal(p)
-	if err != nil {
-		return
-	}
 	_ = e.p2p.BroadcastBlockHeader(data)
 	if vote := e.broadcastPrevote(rs, p.BlockHashForChain(e.chainID)); vote != nil {
 		e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
@@ -357,6 +363,7 @@ func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte, validators
 
 func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stakes []*big.Int,
 	proposeTimer, prevoteTimer, precommitTimer *time.Timer) {
+
 
 	if v.Height != rs.Height || v.Round != rs.Round {
 		return
@@ -413,7 +420,8 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 				precommitTimer.Stop()
 				rs.Phase = PhaseCommit
 				e.setStatus(rs)
-				if e.commit(rs, blockHash) {
+				commitOK := e.commit(rs, blockHash)
+				if commitOK {
 					rs.LastAttestation = attestationFromPrecommits(rs.Precommits, blockHash)
 					var refreshErr error
 					validators, stakes, refreshErr = e.staking.BondedAmounts()

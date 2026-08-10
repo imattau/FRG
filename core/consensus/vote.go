@@ -114,7 +114,11 @@ type BlockProposal struct {
 
 const (
 	maxProposalVotes = 4096
-	maxProposalTxs   = 1024
+	// maxProposalTxs must match blockloop.TMax (the documented per-block
+	// capacity of 65536 txs); a mismatch here silently truncates every
+	// proposal above the lower bound, permanently wedging the round (see
+	// broadcastProposal's phase-ordering fix below for the compounding bug).
+	maxProposalTxs = 65536
 )
 
 // BlockHash returns H(FRG_PROPOSAL_V1\x00 ∥ serialised proposal fields excl. sig).
