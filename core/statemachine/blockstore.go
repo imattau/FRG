@@ -11,7 +11,10 @@ import (
 var blocksBucket = []byte("blocks")
 
 const (
-	maxStoredBlockBytes = 8 << 20
+	// maxStoredBlockBytes must accommodate a full T_MAX (65536 tx) block;
+	// 8MB was sized for a much smaller assumed block and silently capped
+	// real throughput well below the documented per-block capacity.
+	maxStoredBlockBytes = 64 << 20
 	maxBlockRange       = 1024
 )
 

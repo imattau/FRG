@@ -26,7 +26,12 @@ const (
 	topicVoteSuffix     = "/vote/v1"
 	defaultChainID      = "frg-mainnet-1"
 	maxGossipBatchBytes = tx.MaxBatchBytes
-	maxGossipBlockBytes = 1 << 20
+	// maxGossipBlockBytes must accommodate a full T_MAX (65536 tx) proposal
+	// (see statemachine.maxStoredBlockBytes); 1MB silently failed to gossip
+	// any large proposal to other validators (BroadcastBlockHeader's error
+	// return is discarded by its only caller, consensus.broadcastProposal
+	// -- a real multi-validator liveness risk this fix doesn't address).
+	maxGossipBlockBytes = 64 << 20
 	maxGossipVoteBytes  = 141
 )
 

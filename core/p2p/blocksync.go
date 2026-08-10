@@ -13,10 +13,14 @@ import (
 )
 
 const (
-	blockSyncVersion          = byte(1)
-	blockSyncMaxRange         = uint64(1024)
-	blockSyncMaxBlockBytes    = 8 << 20
-	blockSyncMaxResponseBytes = 16 << 20
+	blockSyncVersion  = byte(1)
+	blockSyncMaxRange = uint64(1024)
+	// blockSyncMaxBlockBytes must accommodate a full T_MAX (65536 tx) block
+	// (see statemachine.maxStoredBlockBytes); blockSyncMaxResponseBytes
+	// stays proportionally larger to still fit one max-size block per sync
+	// response.
+	blockSyncMaxBlockBytes    = 64 << 20
+	blockSyncMaxResponseBytes = 128 << 20
 	blockSyncHeaderBytes      = 8 + 1 + 8 + 8
 )
 

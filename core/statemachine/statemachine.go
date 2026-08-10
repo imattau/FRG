@@ -226,8 +226,36 @@ func (sm *StateMachine) ApplyBlock(b *Block) (*Result, error) {
 	return sm.ApplyBlockForChain(b, tx.DefaultChainID)
 }
 
+// isSequenceFault reports whether err is ErrSequenceFault (a tx whose nonce
+// doesn't match the account's next expected nonce). AdvanceNonceTx and
+// TransferTx check-then-write with no partial mutation, so this always fires
+// before any state for that specific tx has been touched -- skipping it is
+// safe and leaves every other tx in the block (including ones already
+// applied earlier in this same pass) untouched. Treating it as fatal instead
+// (the previous behavior) meant a single out-of-order tx -- an expected,
+// routine occurrence when many independent accounts pipeline transactions
+// concurrently -- rolled back and evicted every other transaction in the
+// proposal, including from unrelated accounts. Under concurrent multi
+// -account load this cascaded: any of those collaterally evicted txs that
+// happened to be some account's lowest pending nonce permanently stranded
+// that account too, since nothing else would ever resubmit the missing
+// nonce, and its still-mempooled higher nonces would trigger the same
+// failure in every future proposal that included them. Confirmed live: at
+// 128 pooled connections / 512 accounts, this produced 381 failed block
+// applies in 63s with height barely advancing. Mirrors the existing
+// ErrFunctionNotFound handling below for TxTypeContractCall, which already
+// establishes this exact precedent ("must not invalidate the containing
+// block or stall height") for a different deterministic per-tx rejection.
+func isSequenceFault(err error) bool {
+	var rgErr *rgerrors.RGError
+	return errors.As(err, &rgErr) && rgErr.Code == rgerrors.ErrSequenceFault
+}
+
 // ApplyBlockForChain applies b using signatures bound to chainID. All writes
-// are atomic: any error rolls back the entire block and returns the error.
+// are atomic: any error rolls back the entire block and returns the error --
+// except ErrSequenceFault and TxTypeContractCall's ErrFunctionNotFound,
+// which are deterministic per-tx rejections that skip just that tx instead
+// (see isSequenceFault).
 func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, error) {
 	cur, err := sm.CurrentHeight()
 	if err != nil {
@@ -299,10 +327,16 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 			switch t.Type {
 			case tx.TxTypeTransfer:
 				if err := sm.ledger.TransferTx(btx, t); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 			case tx.TxTypeContractDeploy:
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				gasLimit, err := sm.contractGasLimit(btx, t.SenderPubKey, baseFee)
@@ -318,6 +352,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 				touchedContracts[addr] = struct{}{}
 			case tx.TxTypeContractCall:
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				gasLimit, err := sm.contractGasLimit(btx, t.SenderPubKey, baseFee)
@@ -337,6 +374,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 				touchedContracts[t.ReceiverPubKey] = struct{}{}
 			case tx.TxTypeMissEvidence:
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 			case tx.TxTypeBond:
@@ -344,6 +384,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				if err := sm.staking.BondTx(btx, t.SenderPubKey, t.Value, b.Height); err != nil {
@@ -354,6 +397,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				if err := sm.staking.UnbondTx(btx, t.SenderPubKey, b.Height); err != nil {
@@ -364,6 +410,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				if err := sm.staking.FinalizeTx(btx, t.SenderPubKey, b.Height); err != nil {
@@ -374,6 +423,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				if err := gas.ClaimTx(btx, sm.ledger, t.SenderPubKey); err != nil {
@@ -384,6 +436,9 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					if isSequenceFault(err) {
+						continue
+					}
 					return err
 				}
 				validator, err := validateEquivocationEvidenceTx(t, chainID)
