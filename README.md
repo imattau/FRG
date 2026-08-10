@@ -25,20 +25,25 @@ FRG processes up to **65,536 transactions per block**, organising them into a K=
 
 ```
 core/
-  errors/    — protocol error codes (ERR_001–ERR_020)
+  errors/    — protocol error codes (ERR_001–ERR_027)
   hash/      — SHA2-256, domain prefixes, UINT256_MAX
   keys/      — Ed25519 keypair generation, signing, verification
   tx/        — transaction serialisation, sender signing, nonce, miss evidence
   node/      — RGNode serialisation, coarse-graining, signature derivation
-  tree/      — K-ary state tree construction, empty block anchor
+  tree/      — K-ary state tree construction, retained RG queries, proofs
   ledger/    — balance store (bbolt), Transfer (nonce-enforced), Burn, Seed, Move
   staking/   — Bond, Unbond, Finalize, Slash (equivocation), RecordMiss (liveness)
   gas/       — EIP-1559 base fee, fee accrual, validator/staker distribution
   mint/      — staking-ratio-driven block rewards, split distribution
+  contract/  — deterministic WASM runtime, contract state, deploy/call execution
+  genesis/   — genesis allocation, validator bootstrap, total supply setup
   leader/    — deterministic proposer election, skip rotation
+  consensus/ — proposer/vote state machine, attestations, catch-up validation
+  blockloop/ — mempool, block proposal batching, committed block distribution
   p2p/       — libp2p node, GossipSub tx/block gossip, Kademlia peer discovery
 validator/   — stateless block state root validation
 client/      — offline tx queue, gRPC transport
+wallet/      — Go wallet SDK and faucet helper
 ```
 
 ---
@@ -49,7 +54,27 @@ client/      — offline tx queue, gRPC transport
 
 **MISS_EVIDENCE** (`Type=2`) — records a validator liveness miss on-chain. Submitted by the next validator in the skip rotation. Single signature (reporter only). Committed to state root — independently verifiable by any node.
 
+**CONTRACT_DEPLOY** (`Type=3`) — deploys deterministic WASM bytecode and derives the contract address from the sender pubkey and nonce.
+
+**CONTRACT_CALL** (`Type=4`) — calls a deployed WASM contract. The current dispatcher selects the exported function from the first four calldata bytes.
+
+**BOND** (`Type=5`) — locks the sender's stake in escrow and activates the sender pubkey as a validator once the minimum bond is met.
+
 ---
+
+## Structural Telemetry
+
+FRG now exposes the RG information it derives while committing blocks:
+
+- transaction counts, total value, mean value, and variance
+- transaction type counts
+- per-level RG signature histograms
+- contract density, including touched contract-state RG nodes for newly committed blocks
+- volatile and stagnant region indexes
+
+The node persists a compact exact telemetry summary for each newly committed block. Older pre-telemetry blocks are reconstructed from stored transactions; if they contain contract deploys or calls, query responses warn that historical contract-state RG nodes are unavailable for that block.
+
+Telemetry is available through the node gRPC API (`GetBlockTelemetry`), the Go wallet SDK (`BlockTelemetry`), and the MCP tool `frg_get_block_telemetry`.
 
 ## Economic Model
 
@@ -75,17 +100,19 @@ client/      — offline tx queue, gRPC transport
 
 ---
 
-## Consensus (in progress)
+## Consensus And State Machine
 
 | Component | Status |
 |---|---|
-| Miss evidence transaction | Spec + plan complete |
-| Leader election (hash-based, skip rotation) | Spec + plan complete |
-| Liveness penalties (5-miss threshold, 10% slash) | Spec + plan complete |
-| P2P networking (libp2p, GossipSub) | Spec + plan complete |
-| BFT voting / finality | Pending |
-| State machine | Pending |
-| Genesis | Pending |
+| Genesis allocation and validator bootstrap | Implemented |
+| State machine with atomic block commits | Implemented |
+| Leader election (hash-based, skip rotation) | Implemented |
+| P2P networking (libp2p, GossipSub, Kademlia, mDNS) | Implemented |
+| Mempool and block proposal loop | Implemented |
+| BFT voting / finality with attestations | Implemented |
+| Miss evidence transaction | Implemented |
+| Liveness penalties (5-miss threshold, 10% slash) | Implemented |
+| Catch-up validation from peers | Implemented |
 
 Leader election: `proposer = sortedValidators[H(prevStateRoot ∥ blockHeight) mod n]`
 
@@ -135,6 +162,15 @@ If you want a minimal local setup for the web client or direct gRPC submits, sta
 
 That skips P2P/blockloop startup and brings up the admin API immediately on `127.0.0.1:50051`.
 
+For a real local consensus node, use the first-run initializer:
+
+```bash
+go build -o frg-node ./cmd/frg-node
+./frg-node init-first-network --data-dir frg-first --chain-id frg-devnet-1
+cd frg-first
+../frg-node --config config.toml
+```
+
 ### Web Client
 
 ```bash
@@ -155,6 +191,10 @@ go build -o frg-wallet ./cmd/frg-wallet
 
 It exposes local HTTP endpoints for pubkey, account/balance, transfers, bonding, contract deploy/call/state queries, faucet requests, node status, and validators. The reusable Go package is available at `github.com/imattau/frg/wallet`. See [docs/wallet-api.md](docs/wallet-api.md).
 
+### Token Distribution
+
+New users and validators obtain FRG from genesis allocations, a funded treasury account, another holder, a configured faucet, or protocol mint rewards after validators are bonded and blocks are produced. Wallet and MCP tools do not mint tokens; they only request faucet funding or sign transactions using tokens already available to their account.
+
 ### AI Agent MCP
 
 Build `frg-mcp` to let AI agents inspect FRG state and, with an explicit local policy, transact autonomously:
@@ -164,7 +204,7 @@ go build -o frg-mcp ./cmd/frg-mcp
 ./frg-mcp --create-key --key frg-agent.key --node 127.0.0.1:50051
 ```
 
-See [docs/mcp.md](docs/mcp.md).
+The MCP exposes read tools for status, accounts, validators, mempool, contract state, block telemetry, operator health/readiness, faucet requests, and the standard agent work-contract convention. Policy-gated autonomous tools can transfer, bond, deploy contracts, call contracts, and invoke standard work-contract actions. See [docs/mcp.md](docs/mcp.md).
 
 ### Validator Docker Quickstart
 
@@ -179,7 +219,7 @@ go test ./...
 ### Benchmarks
 
 ```bash
-go test ./test/e2e/... -bench=. -benchmem
+go test ./benchmarks/... -bench=. -benchmem
 ```
 
 ---
@@ -208,6 +248,13 @@ go test ./test/e2e/... -bench=. -benchmem
 | ERR_018 | SEQUENCE_FAULT | tx.Nonce ≠ lastNonce + 1 |
 | ERR_019 | INVALID_TX_TYPE | Unknown Type byte |
 | ERR_020 | EMPTY_VALIDATOR_SET | Validator set is empty |
+| ERR_021 | BLOCK_HEIGHT_SEQUENCE_FAULT | Block height or parent state root is invalid |
+| ERR_022 | CONTRACT_BYTECODE_TOO_LARGE | WASM bytecode exceeds protocol limits |
+| ERR_023 | CONTRACT_OUT_OF_GAS | Contract execution exceeds available gas |
+| ERR_024 | CONTRACT_TRAP | Contract execution trapped |
+| ERR_025 | CONTRACT_NON_DETERMINISTIC | Contract uses disallowed imports or nondeterministic behavior |
+| ERR_026 | CONTRACT_NOT_FOUND | Contract address has no deployed bytecode |
+| ERR_027 | CONTRACT_STATE_INVALID | Contract state key/value is invalid |
 
 ---
 
@@ -217,11 +264,16 @@ go test ./test/e2e/... -bench=. -benchmem
 core/           — protocol packages (no main, no HTTP)
 validator/      — stateless block validator
 client/         — node client with offline queue
+wallet/         — Go wallet SDK
+cmd/            — node, CLI, devnet, faucet, wallet API, MCP, web, stress tools
+docker/         — container entrypoint and first-run setup helpers
+agents/         — optional LLM-driven devnet test swarm
 test/e2e/       — integration and benchmark tests
 docs/
-  superpowers/
-    specs/      — design documents
-    plans/      — implementation plans
+  mcp.md
+  operator-quickstart.md
+  wallet-api.md
+  production.md
 ```
 
 ---
