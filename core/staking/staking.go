@@ -146,6 +146,20 @@ func (s *Store) Unbond(validator [32]byte, currentBlock uint64) error {
 	})
 }
 
+// UnbondTx begins the unbonding lockup inside an existing bolt transaction.
+func (s *Store) UnbondTx(btx *bolt.Tx, validator [32]byte, currentBlock uint64) error {
+	rec := getRecord(btx.Bucket(validatorsBucket), validator)
+	if rec == nil || rec.State == 0 {
+		return rgerrors.New(rgerrors.ErrNotBonded, "validator not bonded")
+	}
+	if rec.State == stateUnbonding {
+		return rgerrors.New(rgerrors.ErrUnbondingPending, "unbonding already in progress")
+	}
+	rec.State = stateUnbonding
+	rec.UnbondingAtBlock = currentBlock
+	return putRecord(btx.Bucket(validatorsBucket), validator, *rec)
+}
+
 // Finalize releases unbonded funds back to validator if lockup has elapsed.
 func (s *Store) Finalize(validator [32]byte, currentBlock uint64) error {
 	rec, err := s.readRecord(validator)
@@ -166,6 +180,42 @@ func (s *Store) Finalize(validator [32]byte, currentBlock uint64) error {
 	return s.db.Update(func(btx *bolt.Tx) error {
 		return btx.Bucket(validatorsBucket).Delete(validator[:])
 	})
+}
+
+// FinalizeTx releases unbonded funds inside an existing bolt transaction if the
+// lockup has elapsed. It is a no-op before lockup completion.
+func (s *Store) FinalizeTx(btx *bolt.Tx, validator [32]byte, currentBlock uint64) error {
+	rec := getRecord(btx.Bucket(validatorsBucket), validator)
+	if rec == nil || rec.State != stateUnbonding {
+		return nil
+	}
+	if currentBlock < rec.UnbondingAtBlock+UnbondingBlocks {
+		return nil
+	}
+
+	escrow := escrowAccount(validator)
+	if err := s.ledger.MoveTx(btx, escrow, validator, rec.BondedAmount); err != nil {
+		return err
+	}
+	return btx.Bucket(validatorsBucket).Delete(validator[:])
+}
+
+// SlashTx burns the full escrow balance of a bonded validator inside an existing
+// bolt transaction and removes the validator record.
+func (s *Store) SlashTx(btx *bolt.Tx, validator [32]byte) (*big.Int, error) {
+	rec := getRecord(btx.Bucket(validatorsBucket), validator)
+	if rec == nil || rec.State == 0 {
+		return nil, rgerrors.New(rgerrors.ErrNotBonded, "validator not bonded")
+	}
+	amount := new(big.Int).Set(rec.BondedAmount)
+	escrow := escrowAccount(validator)
+	if err := s.ledger.BurnTx(btx, escrow, amount); err != nil {
+		return nil, err
+	}
+	if err := btx.Bucket(validatorsBucket).Delete(validator[:]); err != nil {
+		return nil, err
+	}
+	return amount, nil
 }
 
 // Slash burns the full escrow balance of validator on equivocation proof.

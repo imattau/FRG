@@ -70,11 +70,15 @@ Autonomous tools:
 
 - `frg_transfer`
 - `frg_bond`
+- `frg_unbond`
+- `frg_finalize_unbond`
+- `frg_claim_rewards`
 - `frg_contract_deploy`
 - `frg_contract_call`
 - `frg_work_action`
 
 Autonomous tools sign with the MCP wallet key and submit to the configured FRG node. Use `allowed_recipients` and `allowed_contracts` when an agent should only interact with known peers or coordination contracts.
+Validator lifecycle tools require `allow_submit`; `frg_bond`, `frg_unbond`, and `frg_finalize_unbond` also require `allow_bond`.
 
 ## Operator Tools
 

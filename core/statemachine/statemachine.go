@@ -7,6 +7,7 @@ import (
 	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/gas"
+	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/leader"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/mint"
@@ -342,6 +343,52 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 				if err := sm.staking.BondTx(btx, t.SenderPubKey, t.Value, b.Height); err != nil {
 					return err
 				}
+			case tx.TxTypeUnbond:
+				if err := validateZeroValueSelfTx(t); err != nil {
+					return err
+				}
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				if err := sm.staking.UnbondTx(btx, t.SenderPubKey, b.Height); err != nil {
+					return err
+				}
+			case tx.TxTypeFinalizeUnbond:
+				if err := validateZeroValueSelfTx(t); err != nil {
+					return err
+				}
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				if err := sm.staking.FinalizeTx(btx, t.SenderPubKey, b.Height); err != nil {
+					return err
+				}
+			case tx.TxTypeClaimRewards:
+				if err := validateZeroValueSelfTx(t); err != nil {
+					return err
+				}
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				if err := gas.ClaimTx(btx, sm.ledger, t.SenderPubKey); err != nil {
+					return err
+				}
+			case tx.TxTypeEquivEvidence:
+				if err := validateZeroValueTx(t); err != nil {
+					return err
+				}
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				validator, err := validateEquivocationEvidenceTx(t, chainID)
+				if err != nil {
+					return err
+				}
+				slashAmt, err := sm.staking.SlashTx(btx, validator)
+				if err != nil {
+					return err
+				}
+				totalSlashed.Add(totalSlashed, slashAmt)
 			}
 		}
 
@@ -567,4 +614,105 @@ func validateBondTx(t *tx.Tx) error {
 		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "bond transaction contains non-zero evidence fields")
 	}
 	return nil
+}
+
+func validateZeroValueSelfTx(t *tx.Tx) error {
+	if err := validateZeroValueTx(t); err != nil {
+		return err
+	}
+	if t.ReceiverPubKey != [32]byte{} && t.ReceiverPubKey != t.SenderPubKey {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "receiver pubkey must be empty or sender pubkey")
+	}
+	if t.MissedHeight != 0 || t.MissedProposer != [32]byte{} || t.SkipIndex != 0 {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "transaction contains non-zero evidence fields")
+	}
+	if len(t.WasmBytes) != 0 || len(t.InitArgs) != 0 || len(t.CallData) != 0 || len(t.EvidenceA) != 0 || len(t.EvidenceB) != 0 {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "transaction contains unused payload fields")
+	}
+	return nil
+}
+
+func validateZeroValueTx(t *tx.Tx) error {
+	if t.Value == nil || t.Value.Sign() != 0 {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "transaction value must be zero")
+	}
+	return nil
+}
+
+func validateEquivocationEvidenceTx(t *tx.Tx, chainID string) ([32]byte, error) {
+	var empty [32]byte
+	if t.MissedHeight != 0 || t.MissedProposer != [32]byte{} || t.SkipIndex != 0 {
+		return empty, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "equivocation transaction contains non-zero miss fields")
+	}
+	if len(t.WasmBytes) != 0 || len(t.InitArgs) != 0 || len(t.CallData) != 0 {
+		return empty, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "equivocation transaction contains unused payload fields")
+	}
+	a, err := deserializeEvidenceVote(t.EvidenceA)
+	if err != nil {
+		return empty, rgerrors.Newf(rgerrors.ErrCanonicalEncodingDistortion, "invalid evidence A: %v", err)
+	}
+	b, err := deserializeEvidenceVote(t.EvidenceB)
+	if err != nil {
+		return empty, rgerrors.Newf(rgerrors.ErrCanonicalEncodingDistortion, "invalid evidence B: %v", err)
+	}
+	if !verifyEvidenceVote(a, chainID) || !verifyEvidenceVote(b, chainID) {
+		return empty, rgerrors.New(rgerrors.ErrInvalidSignature, "invalid equivocation vote signature")
+	}
+	if a.ValidatorPK != b.ValidatorPK {
+		return empty, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "equivocation votes must have same validator")
+	}
+	if a.Type != b.Type || a.Height != b.Height || a.Round != b.Round {
+		return empty, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "equivocation votes must target same slot")
+	}
+	if a.BlockHash == b.BlockHash {
+		return empty, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "equivocation votes must conflict")
+	}
+	if a.BlockHash == [32]byte{} || b.BlockHash == [32]byte{} {
+		return empty, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "nil votes cannot prove equivocation")
+	}
+	return a.ValidatorPK, nil
+}
+
+type evidenceVote struct {
+	Type        uint8
+	Height      uint64
+	Round       uint32
+	BlockHash   [32]byte
+	ValidatorPK [32]byte
+	Sig         [64]byte
+}
+
+func deserializeEvidenceVote(data []byte) (*evidenceVote, error) {
+	if len(data) != 141 {
+		return nil, rgerrors.Newf(rgerrors.ErrCanonicalEncodingDistortion, "invalid vote length %d", len(data))
+	}
+	v := &evidenceVote{Type: data[0]}
+	v.Height = binary.BigEndian.Uint64(data[1:9])
+	v.Round = binary.BigEndian.Uint32(data[9:13])
+	copy(v.BlockHash[:], data[13:45])
+	copy(v.ValidatorPK[:], data[45:77])
+	copy(v.Sig[:], data[77:141])
+	return v, nil
+}
+
+func verifyEvidenceVote(v *evidenceVote, chainID string) bool {
+	if v == nil || (v.Type != 1 && v.Type != 2) {
+		return false
+	}
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
+	buf := make([]byte, 12+2+len(chainID)+1+8+4+32)
+	copy(buf[0:12], "FRG_VOTE_V1\x00")
+	binary.BigEndian.PutUint16(buf[12:14], uint16(len(chainID)))
+	copy(buf[14:14+len(chainID)], chainID)
+	off := 14 + len(chainID)
+	buf[off] = v.Type
+	off++
+	binary.BigEndian.PutUint64(buf[off:off+8], v.Height)
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:off+4], v.Round)
+	off += 4
+	copy(buf[off:off+32], v.BlockHash[:])
+	return keys.Verify(v.ValidatorPK, buf, v.Sig)
 }

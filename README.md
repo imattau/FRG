@@ -60,6 +60,14 @@ wallet/      — Go wallet SDK and faucet helper
 
 **BOND** (`Type=5`) — locks the sender's stake in escrow and activates the sender pubkey as a validator once the minimum bond is met.
 
+**UNBOND** (`Type=6`) — starts the validator unbonding lockup and removes the validator from the active proposer set.
+
+**FINALIZE_UNBOND** (`Type=7`) — releases escrowed stake after the unbonding lockup has elapsed.
+
+**CLAIM_REWARDS** (`Type=8`) — claims validator reward balances into the validator account.
+
+**EQUIVOCATION_EVIDENCE** (`Type=9`) — submits two conflicting signed consensus votes and slashes the equivocating validator escrow.
+
 ---
 
 ## Structural Telemetry
@@ -204,7 +212,7 @@ go build -o frg-mcp ./cmd/frg-mcp
 ./frg-mcp --create-key --key frg-agent.key --node 127.0.0.1:50051
 ```
 
-The MCP exposes read tools for status, accounts, validators, mempool, contract state, block telemetry, operator health/readiness, faucet requests, and the standard agent work-contract convention. Policy-gated autonomous tools can transfer, bond, deploy contracts, call contracts, and invoke standard work-contract actions. See [docs/mcp.md](docs/mcp.md).
+The MCP exposes read tools for status, accounts, validators, mempool, contract state, block telemetry, operator health/readiness, faucet requests, and the standard agent work-contract convention. Policy-gated autonomous tools can transfer, bond, unbond, finalize unbonding, claim rewards, deploy contracts, call contracts, and invoke standard work-contract actions. See [docs/mcp.md](docs/mcp.md).
 
 ### Validator Docker Quickstart
 

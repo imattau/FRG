@@ -39,6 +39,12 @@ func main() {
 		sendCmd(os.Args[2:])
 	case "bond":
 		bondCmd(os.Args[2:])
+	case "unbond":
+		protocolZeroValueCmd(os.Args[2:], "unbond", tx.TxTypeUnbond)
+	case "finalize-unbond":
+		protocolZeroValueCmd(os.Args[2:], "finalize-unbond", tx.TxTypeFinalizeUnbond)
+	case "claim-rewards":
+		protocolZeroValueCmd(os.Args[2:], "claim-rewards", tx.TxTypeClaimRewards)
 	case "status":
 		statusCmd(os.Args[2:])
 	case "validators":
@@ -63,6 +69,9 @@ Commands:
   submit --tx <full_hex>               Submit fully-signed tx to network
   send --to <pubkey> --amount <n> Send tokens to a pubkey
   bond --amount <n>                Bond this key as an active validator
+  unbond                         Start validator unbonding lockup
+  finalize-unbond                Release stake after unbonding lockup
+  claim-rewards                  Claim validator rewards
   status                        Show network node status
   validators                    List active bonded validators
 
@@ -555,6 +564,70 @@ func bondCmd(args []string) {
 	}
 	txid, _ := tr.ID()
 	fmt.Printf("ok  validator=%x amount=%s txid=%x\n", kp.PublicKey[:], amount.String(), txid[:])
+}
+
+func protocolZeroValueCmd(args []string, name string, typ tx.TxType) {
+	flags := flagSet(args)
+	keyPath := getFlag(flags, "--key", "-k")
+	addr := getFlag(flags, "--addr", "-a")
+	if addr == "" {
+		addr = defaultNodeAddr
+	}
+	chainID := getFlag(flags, "--chain-id")
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
+	kp, err := resolveKey(keyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load key: %v\n", err)
+		os.Exit(1)
+	}
+
+	conn, err := dialNode(addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dial %s: %v\n", addr, err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	client := frgpb.NewFRGClient(conn)
+	acct, err := client.GetAccount(context.Background(), &frgpb.AccountRequest{Pubkey: kp.PublicKey[:]}, callOpt()...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GetAccount: %v\n", err)
+		os.Exit(1)
+	}
+
+	tr := &tx.Tx{
+		Type:           typ,
+		Sender:         "validator",
+		Receiver:       "protocol",
+		Value:          big.NewInt(0),
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   kp.PublicKey,
+		ReceiverPubKey: kp.PublicKey,
+	}
+	sig, err := tr.SignSenderForChain(kp, chainID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sign: %v\n", err)
+		os.Exit(1)
+	}
+	tr.SenderSig = sig
+	txBytes, err := tr.Serialize()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serialize: %v\n", err)
+		os.Exit(1)
+	}
+	resp, err := client.SubmitTx(context.Background(), &frgpb.RawBytes{Data: txBytes}, callOpt()...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SubmitTx: %v\n", err)
+		os.Exit(1)
+	}
+	if !resp.Ok {
+		fmt.Fprintf(os.Stderr, "rejected: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	txid, _ := tr.ID()
+	fmt.Printf("ok  action=%s validator=%x txid=%x\n", name, kp.PublicKey[:], txid[:])
 }
 
 func statusCmd(args []string) {

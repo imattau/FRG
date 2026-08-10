@@ -16,6 +16,7 @@ frg-wallet --listen 127.0.0.1:8090
 ```
 
 Anyone who can reach this API can spend the wallet key through `POST /transfer`, `POST /bond`, `POST /contracts/deploy`, and `POST /contracts/call`.
+Validator lifecycle endpoints such as `POST /unbond`, `POST /finalize-unbond`, and `POST /claim-rewards` also sign and submit transactions with the wallet key.
 
 ## Build
 
@@ -93,6 +94,24 @@ curl -X POST http://127.0.0.1:8090/bond \
 ```
 
 This bonds the local wallet key as a validator key. The account must already hold enough FRG for the bond and transaction gas.
+
+Start validator unbonding:
+
+```sh
+curl -X POST http://127.0.0.1:8090/unbond
+```
+
+Finalize unbonding after the protocol lockup:
+
+```sh
+curl -X POST http://127.0.0.1:8090/finalize-unbond
+```
+
+Claim validator rewards:
+
+```sh
+curl -X POST http://127.0.0.1:8090/claim-rewards
+```
 
 ### Contracts
 

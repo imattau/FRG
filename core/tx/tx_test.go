@@ -197,6 +197,18 @@ func TestTxTypeConstants(t *testing.T) {
 	if tx.TxTypeBond != 5 {
 		t.Fatalf("TxTypeBond: got %d want 5", tx.TxTypeBond)
 	}
+	if tx.TxTypeUnbond != 6 {
+		t.Fatalf("TxTypeUnbond: got %d want 6", tx.TxTypeUnbond)
+	}
+	if tx.TxTypeFinalizeUnbond != 7 {
+		t.Fatalf("TxTypeFinalizeUnbond: got %d want 7", tx.TxTypeFinalizeUnbond)
+	}
+	if tx.TxTypeClaimRewards != 8 {
+		t.Fatalf("TxTypeClaimRewards: got %d want 8", tx.TxTypeClaimRewards)
+	}
+	if tx.TxTypeEquivEvidence != 9 {
+		t.Fatalf("TxTypeEquivEvidence: got %d want 9", tx.TxTypeEquivEvidence)
+	}
 }
 
 func TestTxStructHasMissFields(t *testing.T) {
@@ -327,6 +339,42 @@ func TestMissEvidenceVerifySig(t *testing.T) {
 	// ReceiverPubKey and ReceiverSig remain zero — must still pass for MISS_EVIDENCE
 	if err := tr.VerifySigs(); err != nil {
 		t.Fatalf("VerifySigs: %v", err)
+	}
+}
+
+func TestEquivocationEvidenceSerializationRoundTrip(t *testing.T) {
+	senderKP, _ := mustKP(t)
+	tr := &tx.Tx{
+		Type:         tx.TxTypeEquivEvidence,
+		Sender:       "reporter",
+		Receiver:     "staking",
+		Value:        big.NewInt(0),
+		Nonce:        3,
+		SenderPubKey: senderKP.PublicKey,
+		EvidenceA:    []byte("vote-a"),
+		EvidenceB:    []byte("vote-b"),
+	}
+	msg, err := tr.UnsignedHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.SenderSig, err = senderKP.Sign(msg[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := tr.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := tx.Deserialize(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Type != tx.TxTypeEquivEvidence || string(parsed.EvidenceA) != "vote-a" || string(parsed.EvidenceB) != "vote-b" {
+		t.Fatalf("unexpected parsed evidence tx: %+v", parsed)
+	}
+	if err := parsed.VerifySigs(); err != nil {
+		t.Fatal(err)
 	}
 }
 

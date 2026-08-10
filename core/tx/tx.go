@@ -34,6 +34,10 @@ const (
 	TxTypeContractDeploy TxType = 3
 	TxTypeContractCall   TxType = 4
 	TxTypeBond           TxType = 5
+	TxTypeUnbond         TxType = 6
+	TxTypeFinalizeUnbond TxType = 7
+	TxTypeClaimRewards   TxType = 8
+	TxTypeEquivEvidence  TxType = 9
 )
 
 const maxWasmBytes = 1 << 20 // 1 MB
@@ -58,6 +62,9 @@ type Tx struct {
 	InitArgs []byte
 	// CONTRACT_CALL: function call data
 	CallData []byte
+	// EQUIVOCATION_EVIDENCE: two serialized consensus votes.
+	EvidenceA []byte
+	EvidenceB []byte
 }
 
 func (t *Tx) serializeUnsigned() ([]byte, error) {
@@ -130,6 +137,17 @@ func (t *Tx) serializeUnsigned() ([]byte, error) {
 		ext := make([]byte, 2+len(t.CallData))
 		binary.BigEndian.PutUint16(ext, uint16(len(t.CallData)))
 		copy(ext[2:], t.CallData)
+		buf = append(buf, ext...)
+	case TxTypeEquivEvidence:
+		if len(t.EvidenceA) > 0xFFFF || len(t.EvidenceB) > 0xFFFF {
+			return nil, rgerrors.New(rgerrors.ErrDosSizeExceeded, "equivocation evidence exceeds uint16")
+		}
+		ext := make([]byte, 4+len(t.EvidenceA)+len(t.EvidenceB))
+		binary.BigEndian.PutUint16(ext[0:2], uint16(len(t.EvidenceA)))
+		copy(ext[2:], t.EvidenceA)
+		off := 2 + len(t.EvidenceA)
+		binary.BigEndian.PutUint16(ext[off:off+2], uint16(len(t.EvidenceB)))
+		copy(ext[off+2:], t.EvidenceB)
 		buf = append(buf, ext...)
 	}
 
@@ -258,6 +276,8 @@ func Deserialize(data []byte) (*Tx, error) {
 	// Contract-specific extensions
 	var wasmBytes []byte
 	var callData []byte
+	var evidenceA []byte
+	var evidenceB []byte
 	switch txType {
 	case TxTypeContractDeploy:
 		if pos+4 > len(data)-192 {
@@ -286,6 +306,29 @@ func Deserialize(data []byte) (*Tx, error) {
 		callData = make([]byte, callDataLen)
 		copy(callData, data[pos:pos+int(callDataLen)])
 		pos += int(callDataLen)
+	case TxTypeEquivEvidence:
+		if pos+2 > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "evidence A len truncated")
+		}
+		evidenceALen := binary.BigEndian.Uint16(data[pos:])
+		pos += 2
+		if pos+int(evidenceALen) > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "evidence A truncated")
+		}
+		evidenceA = make([]byte, evidenceALen)
+		copy(evidenceA, data[pos:pos+int(evidenceALen)])
+		pos += int(evidenceALen)
+		if pos+2 > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "evidence B len truncated")
+		}
+		evidenceBLen := binary.BigEndian.Uint16(data[pos:])
+		pos += 2
+		if pos+int(evidenceBLen) > len(data)-192 {
+			return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "evidence B truncated")
+		}
+		evidenceB = make([]byte, evidenceBLen)
+		copy(evidenceB, data[pos:pos+int(evidenceBLen)])
+		pos += int(evidenceBLen)
 	}
 	if pos != len(data)-192 {
 		return nil, rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "non-canonical tx trailing bytes")
@@ -319,6 +362,8 @@ func Deserialize(data []byte) (*Tx, error) {
 		SkipIndex:      skipIndex,
 		WasmBytes:      wasmBytes,
 		CallData:       callData,
+		EvidenceA:      evidenceA,
+		EvidenceB:      evidenceB,
 	}
 	canonical, err := parsed.Serialize()
 	if err != nil {
@@ -345,7 +390,7 @@ func (t *Tx) VerifySigsForChain(chainID string) error {
 	}
 
 	switch t.Type {
-	case TxTypeTransfer, TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall, TxTypeBond:
+	case TxTypeTransfer, TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall, TxTypeBond, TxTypeUnbond, TxTypeFinalizeUnbond, TxTypeClaimRewards, TxTypeEquivEvidence:
 		if !keys.Verify(t.SenderPubKey, msg[:], t.SenderSig) {
 			return rgerrors.New(rgerrors.ErrInvalidSignature, "sender signature verification failed")
 		}

@@ -202,6 +202,45 @@ func TestBondUsesOwnPubkeyAsReceiver(t *testing.T) {
 	}
 }
 
+func TestValidatorLifecycleTransactions(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(*Wallet) (*TransferResult, error)
+		typ  tx.TxType
+	}{
+		{name: "unbond", run: func(w *Wallet) (*TransferResult, error) { return w.Unbond(context.Background()) }, typ: tx.TxTypeUnbond},
+		{name: "finalize", run: func(w *Wallet) (*TransferResult, error) { return w.FinalizeUnbond(context.Background()) }, typ: tx.TxTypeFinalizeUnbond},
+		{name: "claim", run: func(w *Wallet) (*TransferResult, error) { return w.ClaimRewards(context.Background()) }, typ: tx.TxTypeClaimRewards},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeClient{account: &frgpb.AccountResponse{Balance: "1000", Nonce: 4}}
+			w, err := New(kp, fc, "validator-chain")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tc.run(w); err != nil {
+				t.Fatal(err)
+			}
+			if fc.tx.Type != tc.typ {
+				t.Fatalf("type = %d, want %d", fc.tx.Type, tc.typ)
+			}
+			if fc.tx.Value.Sign() != 0 {
+				t.Fatalf("value = %s, want zero", fc.tx.Value)
+			}
+			if fc.tx.ReceiverPubKey != kp.PublicKey {
+				t.Fatalf("receiver pubkey mismatch")
+			}
+			if err := fc.tx.VerifySigsForChain("validator-chain"); err != nil {
+				t.Fatalf("signature did not verify: %v", err)
+			}
+		})
+	}
+}
+
 func TestDeployContractReturnsDeterministicAddress(t *testing.T) {
 	kp, err := keys.GenerateKeypair()
 	if err != nil {

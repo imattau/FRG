@@ -204,6 +204,57 @@ func (w *Wallet) Bond(ctx context.Context, amount *big.Int) (*TransferResult, er
 	return w.signAndSubmit(ctx, tr)
 }
 
+func (w *Wallet) Unbond(ctx context.Context) (*TransferResult, error) {
+	acct, err := w.OwnAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tr := &tx.Tx{
+		Type:           tx.TxTypeUnbond,
+		Sender:         "validator",
+		Receiver:       "staking",
+		Value:          big.NewInt(0),
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   w.kp.PublicKey,
+		ReceiverPubKey: w.kp.PublicKey,
+	}
+	return w.signAndSubmit(ctx, tr)
+}
+
+func (w *Wallet) FinalizeUnbond(ctx context.Context) (*TransferResult, error) {
+	acct, err := w.OwnAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tr := &tx.Tx{
+		Type:           tx.TxTypeFinalizeUnbond,
+		Sender:         "validator",
+		Receiver:       "staking",
+		Value:          big.NewInt(0),
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   w.kp.PublicKey,
+		ReceiverPubKey: w.kp.PublicKey,
+	}
+	return w.signAndSubmit(ctx, tr)
+}
+
+func (w *Wallet) ClaimRewards(ctx context.Context) (*TransferResult, error) {
+	acct, err := w.OwnAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tr := &tx.Tx{
+		Type:           tx.TxTypeClaimRewards,
+		Sender:         "validator",
+		Receiver:       "rewards",
+		Value:          big.NewInt(0),
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   w.kp.PublicKey,
+		ReceiverPubKey: w.kp.PublicKey,
+	}
+	return w.signAndSubmit(ctx, tr)
+}
+
 func (w *Wallet) DeployContract(ctx context.Context, wasm []byte, value *big.Int) (*DeployResult, error) {
 	if len(wasm) == 0 {
 		return nil, fmt.Errorf("wasm is required")

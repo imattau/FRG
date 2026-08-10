@@ -246,6 +246,14 @@ func txTypeName(t tx.TxType) string {
 		return "contract_call"
 	case tx.TxTypeBond:
 		return "bond"
+	case tx.TxTypeUnbond:
+		return "unbond"
+	case tx.TxTypeFinalizeUnbond:
+		return "finalize_unbond"
+	case tx.TxTypeClaimRewards:
+		return "claim_rewards"
+	case tx.TxTypeEquivEvidence:
+		return "equivocation_evidence"
 	default:
 		return fmt.Sprintf("unknown_%d", t)
 	}

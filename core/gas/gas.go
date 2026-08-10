@@ -6,6 +6,7 @@ import (
 	"math/big"
 
 	"github.com/imattau/frg/core/ledger"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -140,6 +141,23 @@ func Claim(l *ledger.Ledger, validator [32]byte) error {
 		return nil
 	}
 	return l.Move(feeAcc, validator, bal)
+}
+
+// ClaimTx moves validator's full fee account balance to their main ledger
+// account inside an existing bolt transaction. It is a no-op when zero.
+func ClaimTx(btx *bolt.Tx, l *ledger.Ledger, validator [32]byte) error {
+	if btx == nil {
+		return fmt.Errorf("bolt transaction is nil")
+	}
+	if l == nil {
+		return fmt.Errorf("ledger is nil")
+	}
+	feeAcc := FeeAccount(validator)
+	bal := l.BalanceOfTx(btx, feeAcc)
+	if bal.Sign() == 0 {
+		return nil
+	}
+	return l.MoveTx(btx, feeAcc, validator, bal)
 }
 
 // Claimable returns the pending fee account balance for validator.

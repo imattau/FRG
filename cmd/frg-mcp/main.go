@@ -321,6 +321,9 @@ func (s *mcpServer) tools() []tool {
 		}, []string{"contract_address"})),
 		writeTool("frg_transfer", "Autonomously send FRG if policy allows it.", objectSchema(map[string]any{"to": stringSchema("recipient pubkey hex"), "amount": stringSchema("base-10 quanta")}, []string{"to", "amount"})),
 		writeTool("frg_bond", "Autonomously bond this wallet as a validator if policy allows it.", objectSchema(map[string]any{"amount": stringSchema("base-10 quanta")}, []string{"amount"})),
+		writeTool("frg_unbond", "Autonomously start validator unbonding if policy allows it.", objectSchema(nil, nil)),
+		writeTool("frg_finalize_unbond", "Autonomously finalize validator unbonding after lockup if policy allows it.", objectSchema(nil, nil)),
+		writeTool("frg_claim_rewards", "Autonomously claim validator rewards if policy allows it.", objectSchema(nil, nil)),
 		writeTool("frg_contract_deploy", "Autonomously deploy a WASM contract if policy allows it.", objectSchema(map[string]any{"wasm_hex": stringSchema("WASM bytes as hex"), "value": stringSchema("optional endowment")}, []string{"wasm_hex"})),
 		writeTool("frg_contract_call", "Autonomously call a contract if policy allows it.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
@@ -544,6 +547,33 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 			return nil, err
 		}
 		s.policy.recordSpend(amount)
+		return jsonTool(resp)
+	case "frg_unbond":
+		if err := s.policy.allowSpend("unbond", "", big.NewInt(0), true, false); err != nil {
+			return nil, err
+		}
+		resp, err := s.w.Unbond(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(resp)
+	case "frg_finalize_unbond":
+		if err := s.policy.allowSpend("finalize_unbond", "", big.NewInt(0), true, false); err != nil {
+			return nil, err
+		}
+		resp, err := s.w.FinalizeUnbond(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(resp)
+	case "frg_claim_rewards":
+		if err := s.policy.allowSpend("claim_rewards", "", big.NewInt(0), false, false); err != nil {
+			return nil, err
+		}
+		resp, err := s.w.ClaimRewards(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return jsonTool(resp)
 	case "frg_contract_deploy":
 		var in struct {

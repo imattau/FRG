@@ -82,6 +82,16 @@ Confirm activation:
 ./frg-cli validators --addr 127.0.0.1:50051
 ```
 
+Validator lifecycle actions are submitted as transactions from the validator key:
+
+```sh
+./frg-cli unbond --key frg-data/frg.key --addr 127.0.0.1:50051 --chain-id frg-mainnet-1
+./frg-cli finalize-unbond --key frg-data/frg.key --addr 127.0.0.1:50051 --chain-id frg-mainnet-1
+./frg-cli claim-rewards --key frg-data/frg.key --addr 127.0.0.1:50051 --chain-id frg-mainnet-1
+```
+
+`finalize-unbond` only releases escrowed stake after the protocol lockup has elapsed.
+
 The same bond can be submitted through the local wallet API:
 
 ```sh

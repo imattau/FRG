@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -95,7 +96,7 @@ func main() {
 
 	kp, err := wallet.LoadKeypair(*keyPath)
 	if err != nil {
-		if !*createKey || !os.IsNotExist(err) {
+		if !*createKey || !errors.Is(err, os.ErrNotExist) {
 			log.Fatalf("load key: %v", err)
 		}
 		kp, err = wallet.GenerateKeypair()
@@ -126,6 +127,9 @@ func main() {
 	mux.HandleFunc("/validators", s.handleValidators)
 	mux.HandleFunc("/transfer", s.handleTransfer)
 	mux.HandleFunc("/bond", s.handleBond)
+	mux.HandleFunc("/unbond", s.handleUnbond)
+	mux.HandleFunc("/finalize-unbond", s.handleFinalizeUnbond)
+	mux.HandleFunc("/claim-rewards", s.handleClaimRewards)
 	mux.HandleFunc("/contracts/address", s.handleContractAddress)
 	mux.HandleFunc("/contracts/state", s.handleContractState)
 	mux.HandleFunc("/contracts/deploy", s.handleContractDeploy)
@@ -253,6 +257,42 @@ func (s *server) handleBond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := s.w.Bond(r.Context(), amount)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *server) handleUnbond(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	resp, err := s.w.Unbond(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *server) handleFinalizeUnbond(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	resp, err := s.w.FinalizeUnbond(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *server) handleClaimRewards(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	resp, err := s.w.ClaimRewards(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return

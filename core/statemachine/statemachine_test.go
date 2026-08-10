@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/imattau/frg/core/consensus"
 	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/gas"
@@ -197,6 +198,45 @@ func makeTransferTx(t *testing.T, sender, receiver *keys.Keypair, value int64, n
 	tr.SenderSig, _ = sender.Sign(msg[:])
 	tr.ReceiverSig, _ = receiver.Sign(msg[:])
 	return tr
+}
+
+func signedProtocolTx(t *testing.T, kp *keys.Keypair, typ tx.TxType, value *big.Int, nonce uint64) *tx.Tx {
+	t.Helper()
+	if value == nil {
+		value = big.NewInt(0)
+	}
+	tr := &tx.Tx{
+		Type:           typ,
+		Sender:         "validator",
+		Receiver:       "protocol",
+		Value:          new(big.Int).Set(value),
+		Nonce:          nonce,
+		SenderPubKey:   kp.PublicKey,
+		ReceiverPubKey: kp.PublicKey,
+	}
+	sig, err := tr.SignSender(kp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.SenderSig = sig
+	return tr
+}
+
+func signedVote(t *testing.T, kp *keys.Keypair, typ consensus.VoteType, height uint64, round uint32, blockHash [32]byte) *consensus.Vote {
+	t.Helper()
+	v := &consensus.Vote{
+		Type:        typ,
+		Height:      height,
+		Round:       round,
+		BlockHash:   blockHash,
+		ValidatorPK: kp.PublicKey,
+	}
+	sig, err := kp.Sign(consensus.VoteSignBytes(v))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.Sig = sig
+	return v
 }
 
 func TestApplySingleTransfer(t *testing.T) {
@@ -434,6 +474,142 @@ func TestApplyBlockBondTxActivatesValidator(t *testing.T) {
 	escrowBal, _ := l.BalanceOf(staking.EscrowAccount(kp.PublicKey))
 	if escrowBal.Cmp(big.NewInt(1000)) != 0 {
 		t.Fatalf("escrow balance = %v, want 1000", escrowBal)
+	}
+}
+
+func TestApplyBlockUnbondAndFinalizeTxLifecycle(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(3000)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, big.NewInt(3000))
+
+	if _, err := sm.ApplyBlock(&statemachine.Block{
+		Height: 1,
+		Txs:    []*tx.Tx{signedProtocolTx(t, kp, tx.TxTypeBond, big.NewInt(1000), 1)},
+	}); err != nil {
+		t.Fatalf("bond: %v", err)
+	}
+	unbondTx := signedProtocolTx(t, kp, tx.TxTypeUnbond, big.NewInt(0), 2)
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 2, Txs: []*tx.Tx{unbondTx}}); err != nil {
+		t.Fatalf("unbond: %v", err)
+	}
+	s, _ := staking.New(db, l)
+	validators, err := s.ValidatorSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(validators) != 0 {
+		t.Fatalf("validator should be inactive while unbonding: %x", validators)
+	}
+
+	for h := uint64(3); h < 1002; h++ {
+		if _, err := sm.ApplyBlock(&statemachine.Block{Height: h}); err != nil {
+			t.Fatalf("empty block %d: %v", h, err)
+		}
+	}
+	finalizeTx := signedProtocolTx(t, kp, tx.TxTypeFinalizeUnbond, big.NewInt(0), 3)
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1002, Txs: []*tx.Tx{finalizeTx}}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	bal, err := l.BalanceOf(kp.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Cmp(big.NewInt(1900)) < 0 {
+		t.Fatalf("finalized balance too low: %s", bal)
+	}
+}
+
+func TestApplyBlockClaimRewardsTxMovesClaimableBalance(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(gas.FeeAccount(kp.PublicKey), big.NewInt(250)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, big.NewInt(1250))
+
+	claimTx := signedProtocolTx(t, kp, tx.TxTypeClaimRewards, big.NewInt(0), 1)
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{claimTx}}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	claimable, err := gas.Claimable(l, kp.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimable.Sign() != 0 {
+		t.Fatalf("claimable = %s, want 0", claimable)
+	}
+	bal, err := l.BalanceOf(kp.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bal.Cmp(big.NewInt(1200)) < 0 {
+		t.Fatalf("claimed balance too low after gas: %s", bal)
+	}
+}
+
+func TestApplyBlockEquivocationEvidenceSlashesValidator(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	validatorKP, _ := keys.GenerateKeypair()
+	reporterKP, _ := keys.GenerateKeypair()
+	if err := l.Seed(validatorKP.PublicKey, big.NewInt(3000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(reporterKP.PublicKey, big.NewInt(100)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, big.NewInt(3100))
+
+	if _, err := sm.ApplyBlock(&statemachine.Block{
+		Height: 1,
+		Txs:    []*tx.Tx{signedProtocolTx(t, validatorKP, tx.TxTypeBond, big.NewInt(1000), 1)},
+	}); err != nil {
+		t.Fatalf("bond: %v", err)
+	}
+
+	voteA := signedVote(t, validatorKP, consensus.VotePrecommit, 1, 0, [32]byte{1})
+	voteB := signedVote(t, validatorKP, consensus.VotePrecommit, 1, 0, [32]byte{2})
+	rawA, err := voteA.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawB, err := voteB.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceTx := signedProtocolTx(t, reporterKP, tx.TxTypeEquivEvidence, big.NewInt(0), 1)
+	evidenceTx.EvidenceA = rawA
+	evidenceTx.EvidenceB = rawB
+	evidenceTx.SenderSig, err = evidenceTx.SignSender(reporterKP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 2, Txs: []*tx.Tx{evidenceTx}}); err != nil {
+		t.Fatalf("equivocation evidence: %v", err)
+	}
+
+	s, _ := staking.New(db, l)
+	validators, err := s.ValidatorSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(validators) != 0 {
+		t.Fatalf("slashed validator remains active: %x", validators)
+	}
+	escrowBal, err := l.BalanceOf(staking.EscrowAccount(validatorKP.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if escrowBal.Sign() != 0 {
+		t.Fatalf("escrow balance = %s, want 0", escrowBal)
 	}
 }
 
