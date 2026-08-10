@@ -87,6 +87,14 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit
 	}
 
 	state := loadState(btx, contractAddr)
+	// The selector chooses the exported function; the remaining bytes are the
+	// contract payload exposed through frg.calldata_len/calldata_copy.
+	funcName := "call"
+	callData := t.CallData
+	if len(t.CallData) >= 4 {
+		funcName = string(t.CallData[:4])
+		callData = t.CallData[4:]
+	}
 
 	cfg := &RuntimeConfig{
 		WasmBytes:   wasmBytes,
@@ -94,6 +102,7 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit
 		SelfAddr:    contractAddr,
 		Value:       t.Value,
 		BlockHeight: blockHeight,
+		CallData:    append([]byte(nil), callData...),
 		State:       state,
 		Ledger:      l,
 		BoltTx:      btx,
@@ -102,11 +111,6 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit
 	rt, err := NewRuntime(cfg)
 	if err != nil {
 		return [32]byte{}, 0, err
-	}
-
-	funcName := "call"
-	if len(t.CallData) >= 4 {
-		funcName = string(t.CallData[:4])
 	}
 
 	if _, err := rt.Call(funcName); err != nil {

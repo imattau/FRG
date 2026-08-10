@@ -129,7 +129,12 @@ Newly committed blocks persist an exact compact telemetry summary, including tou
 
 `frg_work_state` queries the standard state keys from a work contract.
 
-`frg_work_action` calls one standard action on a work contract. The current FRG contract dispatcher selects the exported function from the first four calldata bytes. Rich payloads such as full terms, result bodies, or verifier reports should be hashed off-chain and represented on-chain by convention keys unless a specific contract implements more storage behavior.
+`frg_work_action` calls one standard action on a work contract. The FRG
+contract dispatcher selects the exported function from the first four bytes of
+calldata; the remaining payload is available through
+`frg.calldata_len()`/`frg.calldata_copy(...)`. Contracts can therefore parse
+bounded terms, result bodies, or verifier reports directly, subject to the
+transaction size and gas limits.
 Its `value` field is an FRG decimal string, which lets an agent post escrow
 funds such as `"25"` without calculating quanta.
 

@@ -315,6 +315,66 @@ func TestBn254PairingCheck(t *testing.T) {
 	}
 }
 
+func TestRuntimeCalldataLengthAndCopy(t *testing.T) {
+	wasmBytes, err := wasmtime.Wat2Wasm(`
+		(module
+		  (import "frg" "calldata_len" (func $calldata_len (result i32)))
+		  (import "frg" "calldata_copy" (func $calldata_copy (param i32 i32 i32) (result i32)))
+		  (import "frg" "state_set" (func $state_set (param i32 i32 i32 i32) (result i32)))
+		  (memory (export "memory") 1)
+		  (data (i32.const 0) "out")
+		  (func (export "init"))
+		  (func (export "call")
+		    (call $calldata_len)
+		    (drop)
+		    (call $calldata_copy (i32.const 16) (i32.const 0) (i32.const 3))
+		    (drop)
+		    (call $state_set (i32.const 0) (i32.const 3) (i32.const 16) (i32.const 3))
+		    (drop)
+		  )
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	store := contract.NewStateStore()
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes: wasmBytes,
+			Caller:    kp.PublicKey,
+			SelfAddr:  kp.PublicKey,
+			Value:     big.NewInt(0),
+			CallData:  []byte("abc"),
+			State:     store,
+			Ledger:    l,
+			BoltTx:    btx,
+			GasLimit:  1000,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = rt.Call("call")
+		return err
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
+	value, found := store.Get([]byte("out"))
+	if !found || string(value) != "abc" {
+		t.Fatalf("calldata payload = %q, found=%v; want %q", value, found, "abc")
+	}
+}
+
 func TestRuntimeBn254PairingPrecompile(t *testing.T) {
 	g1 := new(bn256.G1).ScalarBaseMult(big.NewInt(1))
 	negG1 := new(bn256.G1).Neg(g1)

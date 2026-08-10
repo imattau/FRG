@@ -185,7 +185,11 @@ curl -X POST http://127.0.0.1:8090/contracts/call \
   -d '{"contract_address":"CONTRACT_ADDRESS","call_data_hex":"63616c6c"}'
 ```
 
-The current contract runtime selects the exported function from the first four bytes of calldata. If neither `function` nor `call_data_hex` is provided, the wallet sends `call`.
+The contract runtime selects the exported function from the first four bytes of
+calldata. The remaining bytes are delivered to the contract through the
+`frg.calldata_len()` and `frg.calldata_copy(dst, offset, max_len)` host
+functions. If neither `function` nor `call_data_hex` is provided, the wallet
+sends `call`.
 
 Query contract existence and state root:
 

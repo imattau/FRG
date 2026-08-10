@@ -57,7 +57,7 @@ wallet/      — Go wallet SDK and faucet helper
 
 **CONTRACT_DEPLOY** (`Type=3`) — deploys deterministic WASM bytecode and derives the contract address from the sender pubkey and nonce.
 
-**CONTRACT_CALL** (`Type=4`) — calls a deployed WASM contract. The current dispatcher selects the exported function from the first four calldata bytes. Contracts can call the `frg.bn254_pairing_check(ptr,len)` host precompile with repeated 192-byte `(G1.Marshal || G2.Marshal)` pairs; it returns `1` when the product of pairings equals one, `0` for a valid false check, and `-1` for malformed input or insufficient gas.
+**CONTRACT_CALL** (`Type=4`) — calls a deployed WASM contract. The dispatcher selects the exported function from the first four calldata bytes; the remaining bytes are available through `frg.calldata_len()` and `frg.calldata_copy(dst,offset,max_len)`. Contracts can call the `frg.bn254_pairing_check(ptr,len)` host precompile with repeated 192-byte `(G1.Marshal || G2.Marshal)` pairs; it returns `1` when the product of pairings equals one, `0` for a valid false check, and `-1` for malformed input or insufficient gas.
 
 Contract compute gas uses a fixed consensus conversion of Wasmtime fuel to protocol gas. See [Protocol Gas Calibration](docs/protocol-gas.md).
 

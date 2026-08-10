@@ -30,6 +30,7 @@ const (
 	HostBlockHeightFuel    = HostContextReadFuel
 	HostAddressReadFuel    = HostContextReadFuel
 	HostSelfBalanceFuel    = HostBalanceReadFuel
+	HostCalldataLengthFuel = HostContextReadFuel
 	HostPairingCheckReason = "bn254 pairing precompile"
 )
 
@@ -48,10 +49,12 @@ type RuntimeConfig struct {
 	SelfAddr    [32]byte
 	Value       *big.Int
 	BlockHeight uint64
-	State       *StateStore
-	Ledger      *ledger.Ledger
-	BoltTx      *bolt.Tx
-	GasLimit    uint64
+	// CallData is the payload after the four-byte function selector.
+	CallData []byte
+	State    *StateStore
+	Ledger   *ledger.Ledger
+	BoltTx   *bolt.Tx
+	GasLimit uint64
 }
 
 func NewRuntime(cfg *RuntimeConfig) (*Runtime, error) {
@@ -224,6 +227,38 @@ func (r *Runtime) defineHostFunctions(cfg *RuntimeConfig) {
 		}
 		mem := mustMem(caller)
 		writeMem(mem, caller, outPtr, 32, cfg.SelfAddr[:])
+	})
+
+	r.linker.FuncWrap("frg", "calldata_len", func() int32 {
+		if err := r.chargeFuelFor("calldata_len", HostCalldataLengthFuel); err != nil {
+			r.hostErr = err
+			return 0
+		}
+		return int32(len(cfg.CallData))
+	})
+
+	r.linker.FuncWrap("frg", "calldata_copy", func(caller *wasmtime.Caller, dstPtr int32, offset int32, maxLen int32) int32 {
+		if offset < 0 || maxLen < 0 || int64(offset) > int64(len(cfg.CallData)) {
+			return -1
+		}
+		end := int64(offset) + int64(maxLen)
+		if end > int64(len(cfg.CallData)) {
+			end = int64(len(cfg.CallData))
+		}
+		copyLen := int32(end - int64(offset))
+		if err := r.chargeFuelFor("calldata_copy", hostFuel(HostCalldataLengthFuel, copyLen)); err != nil {
+			r.hostErr = err
+			return -1
+		}
+		mem := mustMem(caller)
+		if mem == nil || dstPtr < 0 || int64(dstPtr)+int64(copyLen) > int64(len(mem.UnsafeData(caller))) {
+			return -1
+		}
+		if copyLen == 0 {
+			return 0
+		}
+		writeMem(mem, caller, dstPtr, copyLen, cfg.CallData[int(offset):int(end)])
+		return copyLen
 	})
 
 	r.linker.FuncWrap("frg", "log", func(caller *wasmtime.Caller, ptr int32, length int32) {
