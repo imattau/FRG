@@ -452,6 +452,134 @@ func TestRuntimeBn254PairingPrecompileOutOfGas(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateSetHostChargeOutOfGas(t *testing.T) {
+	wasmBytes, err := wasmtime.Wat2Wasm(`
+		(module
+		  (import "frg" "state_set" (func $state_set (param i32 i32 i32 i32) (result i32)))
+		  (memory (export "memory") 1)
+		  (data (i32.const 0) "key-value")
+		  (func (export "init"))
+		  (func (export "call")
+		    (call $state_set (i32.const 0) (i32.const 3) (i32.const 4) (i32.const 5))
+		    (drop)
+		  )
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := contract.NewStateStore()
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   wasmBytes,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       store,
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    1,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = rt.Call("call")
+		var rgErr *rgerrors.RGError
+		if !errors.As(err, &rgErr) || rgErr.Code != rgerrors.ErrContractOutOfGas {
+			t.Fatalf("expected %s, got %v", rgerrors.ErrContractOutOfGas, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
+}
+
+func TestRuntimeHostFunctionFuelCharges(t *testing.T) {
+	wasmBytes, err := wasmtime.Wat2Wasm(`
+		(module
+		  (import "frg" "state_set" (func $state_set (param i32 i32 i32 i32) (result i32)))
+		  (import "frg" "state_get" (func $state_get (param i32 i32 i32 i32) (result i32)))
+		  (import "frg" "log" (func $log (param i32 i32)))
+		  (memory (export "memory") 1)
+		  (data (i32.const 0) "key-value")
+		  (func (export "init"))
+		  (func (export "call")
+		    (call $state_set (i32.const 0) (i32.const 3) (i32.const 4) (i32.const 5))
+		    (drop)
+		    (call $state_get (i32.const 0) (i32.const 3) (i32.const 32) (i32.const 16))
+		    (drop)
+		    (call $log (i32.const 0) (i32.const 9))
+		  )
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := contract.NewStateStore()
+	var fuelUsed uint64
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   wasmBytes,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       store,
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    1000,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := rt.Call("call"); err != nil {
+			return err
+		}
+		fuelUsed = rt.FuelConsumed()
+		return nil
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
+
+	minExpected := uint64(contract.HostStorageWriteFuel + contract.HostStorageReadFuel + contract.HostLogFuel)
+	if fuelUsed < minExpected {
+		t.Fatalf("fuelUsed=%d, want at least host charges %d", fuelUsed, minExpected)
+	}
+}
+
 func watDataString(data []byte) string {
 	var b strings.Builder
 	for _, c := range data {

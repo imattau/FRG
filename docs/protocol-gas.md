@@ -29,16 +29,19 @@ The value should be selected from benchmark data, not chosen per transaction:
 - the workload table from `go test ./benchmarks -run TestFuelCostModel -v`
 - adversarial worst-case contracts, not just average application contracts
 
-The current `1000` divisor keeps normal benchmark contracts cheap while making
-plain-WASM cryptographic pairings visibly expensive.
+The current `1000` divisor keeps pure WASM compute contracts cheap while host
+functions add explicit fixed and per-byte charges for storage, balance,
+transfer, logging, and crypto precompile work.
 
 Latest measured examples on the local benchmark machine:
 
 | workload | fuel | protocol gas |
 | --- | ---: | ---: |
-| `heavy` | `242408` | `242` |
+| `heavy` | `6398408` | `6398` |
 | `memory` | `3277061` | `3277` |
 | `arithmetic` | `2300004` | `2300` |
+| `state_write` | `5009901` | `5009` |
+| `hashing` | `10500001` | `10500` |
 | `bn254_pairing` | `65338457` | `65338` |
 
 `bn254_pairing` exceeds the default `gas.TargetGasPerBlock` of `32768`, so FRG
