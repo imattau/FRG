@@ -82,6 +82,25 @@ Confirm activation:
 ./frg-cli validators --addr 127.0.0.1:50051
 ```
 
+## Get Tokens
+
+Users and new validators get FRG from genesis allocations, a funded treasury account, a faucet, or another holder. Transfers are sender-signed, so funded accounts can send directly to any user or validator pubkey:
+
+```sh
+./frg-cli send \
+  --key treasury.key \
+  --to USER_OR_VALIDATOR_PUBKEY \
+  --amount 100
+```
+
+The faucet endpoint also funds the requested pubkey directly:
+
+```sh
+curl -X POST http://127.0.0.1:8088/faucet \
+  -H 'content-type: application/json' \
+  -d '{"pubkey":"USER_OR_VALIDATOR_PUBKEY"}'
+```
+
 ## Manual Start
 
 The generated `run-validator.sh` is equivalent to:

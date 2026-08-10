@@ -31,6 +31,7 @@ type faucet struct {
 	kp       *keys.Keypair
 	db       *bolt.DB
 	nodeAddr string
+	chainID  string
 	mu       sync.Mutex
 }
 
@@ -39,16 +40,16 @@ type faucetRequest struct {
 }
 
 type faucetResponse struct {
-	Ok           bool   `json:"ok"`
-	Txid         string `json:"txid,omitempty"`
-	Error        string `json:"error,omitempty"`
-	ReceiverSeed string `json:"receiver_seed,omitempty"`
+	Ok    bool   `json:"ok"`
+	Txid  string `json:"txid,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 func main() {
 	keyPath := flag.String("key", "faucet.key", "faucet keypair seed (32 bytes)")
 	dbPath := flag.String("db", "faucet.db", "faucet rate-limit database")
 	nodeAddr := flag.String("node", "127.0.0.1:50051", "FRG node gRPC address")
+	chainID := flag.String("chain-id", tx.DefaultChainID, "chain ID for transaction signatures")
 	listenAddr := flag.String("listen", "0.0.0.0:8088", "HTTP listen address")
 	flag.Parse()
 
@@ -71,7 +72,7 @@ func main() {
 		log.Fatalf("create bucket: %v", err)
 	}
 
-	f := &faucet{kp: kp, db: db, nodeAddr: *nodeAddr}
+	f := &faucet{kp: kp, db: db, nodeAddr: *nodeAddr, chainID: *chainID}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/faucet", f.handleFaucet)
@@ -144,13 +145,6 @@ func (f *faucet) handleFaucet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rcvrKP, err := keys.GenerateKeypair()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, faucetResponse{Ok: false, Error: "generate receiver key: " + err.Error()})
-		return
-	}
-	rcvrSeed := kpToSeed(rcvrKP)
-
 	tr := &tx.Tx{
 		Type:           tx.TxTypeTransfer,
 		Sender:         "faucet",
@@ -158,21 +152,14 @@ func (f *faucet) handleFaucet(w http.ResponseWriter, r *http.Request) {
 		Value:          big.NewInt(defaultFaucetAmount),
 		Nonce:          nonce,
 		SenderPubKey:   f.kp.PublicKey,
-		ReceiverPubKey: rcvrKP.PublicKey,
+		ReceiverPubKey: recipient,
 	}
-	sig, err := tr.SignSender(f.kp)
+	sig, err := tr.SignSenderForChain(f.kp, f.chainID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, faucetResponse{Ok: false, Error: "sign sender: " + err.Error()})
 		return
 	}
 	tr.SenderSig = sig
-
-	rsig, err := tr.SignReceiver(rcvrKP)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, faucetResponse{Ok: false, Error: "sign receiver: " + err.Error()})
-		return
-	}
-	tr.ReceiverSig = rsig
 
 	txBytes, err := tr.Serialize()
 	if err != nil {
@@ -189,9 +176,8 @@ func (f *faucet) handleFaucet(w http.ResponseWriter, r *http.Request) {
 
 	txid, _ := tr.ID()
 	writeJSON(w, http.StatusOK, faucetResponse{
-		Ok:           true,
-		Txid:         hex.EncodeToString(txid[:]),
-		ReceiverSeed: hex.EncodeToString(rcvrSeed[:]),
+		Ok:   true,
+		Txid: hex.EncodeToString(txid[:]),
 	})
 }
 
@@ -283,11 +269,4 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func kpToSeed(kp *keys.Keypair) [32]byte {
-	priv := [64]byte(kp.PrivateKey)
-	seed := [32]byte{}
-	copy(seed[:], priv[:32])
-	return seed
 }

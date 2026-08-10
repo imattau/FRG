@@ -61,8 +61,7 @@ Commands:
   prepare --to <pubkey> --amount <n>   Create a sender-signed partial tx
   countersign --tx <partial_hex>       Add receiver sig to partial tx
   submit --tx <full_hex>               Submit fully-signed tx to network
-  send --to <pubkey> --amount <n> --receiver-key <path>
-                                    All-in-one send (devnet convenience)
+  send --to <pubkey> --amount <n> Send tokens to a pubkey
   bond --amount <n>                Bond this key as an active validator
   status                        Show network node status
   validators                    List active bonded validators
@@ -76,7 +75,6 @@ Flags:
   --tx <hex>         Serialized tx for sign/submit
   --sender <name>    Sender label in tx (default: "cli")
   --receiver <name>  Receiver label in tx (default: "cli")
-  --receiver-key <p> Receiver keypair for auto-countersign
   --output <path>    Output key file (keygen only, default: frg-cli.key)
 `)
 }
@@ -235,6 +233,10 @@ func prepareCmd(args []string) {
 
 	toHex := getFlag(flags, "--to", "-t")
 	amountStr := getFlag(flags, "--amount", "-m")
+	chainID := getFlag(flags, "--chain-id")
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
 	senderLabel := getFlag(flags, "--sender")
 	if senderLabel == "" {
 		senderLabel = "cli"
@@ -273,7 +275,7 @@ func prepareCmd(args []string) {
 		SenderPubKey:   kp.PublicKey,
 		ReceiverPubKey: receiverPubkey,
 	}
-	sig, err := tr.SignSender(kp)
+	sig, err := tr.SignSenderForChain(kp, chainID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sign: %v\n", err)
 		os.Exit(1)
@@ -385,13 +387,16 @@ func submitCmd(args []string) {
 func sendCmd(args []string) {
 	flags := flagSet(args)
 	keyPath := getFlag(flags, "--key", "-k")
-	rcvrKeyPath := getFlag(flags, "--receiver-key")
 	addr := getFlag(flags, "--addr", "-a")
 	if addr == "" {
 		addr = defaultNodeAddr
 	}
 	toHex := getFlag(flags, "--to", "-t")
 	amountStr := getFlag(flags, "--amount", "-m")
+	chainID := getFlag(flags, "--chain-id")
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
 	senderLabel := getFlag(flags, "--sender")
 	if senderLabel == "" {
 		senderLabel = "cli"
@@ -401,20 +406,14 @@ func sendCmd(args []string) {
 		receiverLabel = "cli"
 	}
 
-	if toHex == "" || amountStr == "" || rcvrKeyPath == "" {
-		fmt.Fprintln(os.Stderr, "send: --to, --amount, and --receiver-key required (or use prepare+countersign+submit)")
+	if toHex == "" || amountStr == "" {
+		fmt.Fprintln(os.Stderr, "send: --to and --amount required")
 		os.Exit(1)
 	}
 
 	senderKP, err := resolveKey(keyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load sender key: %v\n", err)
-		os.Exit(1)
-	}
-
-	receiverKP, err := resolveKey(rcvrKeyPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load receiver key: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -457,19 +456,12 @@ func sendCmd(args []string) {
 		ReceiverPubKey: receiverPubkey,
 	}
 
-	sig, err := tr.SignSender(senderKP)
+	sig, err := tr.SignSenderForChain(senderKP, chainID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sign sender: %v\n", err)
 		os.Exit(1)
 	}
 	tr.SenderSig = sig
-
-	rsig, err := tr.SignReceiver(receiverKP)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sign receiver: %v\n", err)
-		os.Exit(1)
-	}
-	tr.ReceiverSig = rsig
 
 	txBytes, err := tr.Serialize()
 	if err != nil {

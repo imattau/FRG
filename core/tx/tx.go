@@ -331,8 +331,8 @@ func Deserialize(data []byte) (*Tx, error) {
 }
 
 // VerifySigs verifies Ed25519 signatures against H(Tx_Bytes_unsigned).
-// TRANSFER: verifies both SenderSig and ReceiverSig.
-// MISS_EVIDENCE / CONTRACT_DEPLOY / CONTRACT_CALL / BOND verify only SenderSig.
+// All transaction types require the sender signature. Receiver signatures are
+// serialized for legacy compatibility but are not required for transfers.
 func (t *Tx) VerifySigs() error {
 	return t.VerifySigsForChain(DefaultChainID)
 }
@@ -345,14 +345,7 @@ func (t *Tx) VerifySigsForChain(chainID string) error {
 	}
 
 	switch t.Type {
-	case TxTypeTransfer:
-		if !keys.Verify(t.SenderPubKey, msg[:], t.SenderSig) {
-			return rgerrors.New(rgerrors.ErrInvalidSignature, "sender signature verification failed")
-		}
-		if !keys.Verify(t.ReceiverPubKey, msg[:], t.ReceiverSig) {
-			return rgerrors.New(rgerrors.ErrInvalidSignature, "receiver signature verification failed")
-		}
-	case TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall, TxTypeBond:
+	case TxTypeTransfer, TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall, TxTypeBond:
 		if !keys.Verify(t.SenderPubKey, msg[:], t.SenderSig) {
 			return rgerrors.New(rgerrors.ErrInvalidSignature, "sender signature verification failed")
 		}

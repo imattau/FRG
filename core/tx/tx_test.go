@@ -178,20 +178,12 @@ func TestVerifySigsSenderInvalid(t *testing.T) {
 	}
 }
 
-func TestVerifySigsReceiverInvalid(t *testing.T) {
+func TestVerifySigsTransferDoesNotRequireReceiverSig(t *testing.T) {
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	t1 := signedTx(t, "alice", "bob", scale, 7)
-	t1.ReceiverSig[0] ^= 0xff
-	err := t1.VerifySigs()
-	if err == nil {
-		t.Fatal("expected ERR_012, got nil")
-	}
-	rgErr, ok := err.(*rgerrors.RGError)
-	if !ok {
-		t.Fatalf("expected *RGError, got %T", err)
-	}
-	if rgErr.Code != rgerrors.ErrInvalidSignature {
-		t.Fatalf("expected ERR_012, got %s", rgErr.Code)
+	t1.ReceiverSig = [64]byte{}
+	if err := t1.VerifySigs(); err != nil {
+		t.Fatalf("sender-signed transfer was rejected: %v", err)
 	}
 }
 
@@ -338,7 +330,7 @@ func TestMissEvidenceVerifySig(t *testing.T) {
 	}
 }
 
-func TestTransferVerifySigBothRequired(t *testing.T) {
+func TestTransferVerifySigSenderOnly(t *testing.T) {
 	senderKP, receiverKP := mustKP(t)
 
 	tr := &tx.Tx{
@@ -350,13 +342,13 @@ func TestTransferVerifySigBothRequired(t *testing.T) {
 		SenderPubKey:   senderKP.PublicKey,
 		ReceiverPubKey: receiverKP.PublicKey,
 	}
-	// Only sign sender — receiver sig stays zero
 	msg, _ := tr.UnsignedHash()
 	sig, _ := senderKP.Sign(msg[:])
 	tr.SenderSig = sig
 
-	err := tr.VerifySigs()
-	assertCode(t, err, rgerrors.ErrInvalidSignature)
+	if err := tr.VerifySigs(); err != nil {
+		t.Fatalf("sender-only transfer signature rejected: %v", err)
+	}
 }
 
 func TestInvalidTxType(t *testing.T) {
