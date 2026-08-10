@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
@@ -180,7 +181,8 @@ func TestBondUsesOwnPubkeyAsReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fc := &fakeClient{account: &frgpb.AccountResponse{Balance: "1000", Nonce: 2}}
+	minimumBond := new(big.Int).Mul(big.NewInt(1000), denom.QuantaPerFRG)
+	fc := &fakeClient{account: &frgpb.AccountResponse{Balance: minimumBond.String(), Nonce: 2}}
 	w, err := New(kp, fc, "")
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +190,7 @@ func TestBondUsesOwnPubkeyAsReceiver(t *testing.T) {
 	if w.ChainID() != tx.DefaultChainID {
 		t.Fatalf("chain id = %s", w.ChainID())
 	}
-	if _, err := w.Bond(context.Background(), big.NewInt(1000)); err != nil {
+	if _, err := w.Bond(context.Background(), minimumBond); err != nil {
 		t.Fatal(err)
 	}
 	if fc.tx.Type != tx.TxTypeBond {
@@ -196,6 +198,9 @@ func TestBondUsesOwnPubkeyAsReceiver(t *testing.T) {
 	}
 	if fc.tx.ReceiverPubKey != kp.PublicKey {
 		t.Fatalf("bond receiver pubkey mismatch")
+	}
+	if fc.tx.Value.Cmp(minimumBond) != 0 {
+		t.Fatalf("bond value = %s, want %s", fc.tx.Value, minimumBond)
 	}
 	if err := fc.tx.VerifySigsForChain(tx.DefaultChainID); err != nil {
 		t.Fatalf("bond signature did not verify: %v", err)
