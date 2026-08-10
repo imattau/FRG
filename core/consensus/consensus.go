@@ -111,6 +111,20 @@ type Engine struct {
 	chainID  string
 	mu       sync.RWMutex
 	status   EngineStatus
+	// Signals "a delayed self-proposal is ready to broadcast" from a
+	// time.AfterFunc callback (which runs on its own goroutine, per the Go
+	// stdlib) back to Start's select loop, so broadcastProposal/handleVote
+	// -- and the RoundState maps they mutate (rs.Prevotes/rs.Precommits)
+	// -- only ever run on Start's single goroutine. Calling them directly
+	// from an AfterFunc callback used to race Start's own concurrent
+	// access to those maps, crashing with "fatal error: concurrent map
+	// writes" whenever the callback fired during active voting instead of
+	// into a quiet gap -- rare before restartRound (see its own docs)
+	// actually worked, common once retried rounds made self-proposals
+	// fire back-to-back. Buffered 1 + non-blocking send in every sender:
+	// at most one pending self-proposal signal matters at a time, and a
+	// timer goroutine must never block on this.
+	proposeReady chan struct{}
 }
 
 // Proposer defines the interface for building and finalizing proposals.
@@ -138,14 +152,15 @@ func NewWithChainID(kp *keys.Keypair, s *staking.Store, sm *statemachine.StateMa
 		chainID = tx.DefaultChainID
 	}
 	return &Engine{
-		kp:       kp,
-		staking:  s,
-		sm:       sm,
-		p2p:      n,
-		proposer: proposer,
-		timeouts: cfg,
-		stopCh:   make(chan struct{}),
-		chainID:  chainID,
+		kp:           kp,
+		staking:      s,
+		sm:           sm,
+		p2p:          n,
+		proposer:     proposer,
+		timeouts:     cfg,
+		stopCh:       make(chan struct{}),
+		chainID:      chainID,
+		proposeReady: make(chan struct{}, 1),
 	}
 }
 
@@ -222,13 +237,10 @@ func (e *Engine) Start(ctx context.Context) error {
 			}
 		}
 	} else if proposerPK == e.kp.PublicKey {
-		rsCopy := rs
-		pkCopy := proposerPK
-		rootCopy := prevRoot
 		time.AfterFunc(e.timeouts.ProposeDelay, func() {
-			if rsCopy.Phase == PhasePropose {
-				_ = pkCopy
-				e.broadcastProposal(rsCopy, rootCopy, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+			select {
+			case e.proposeReady <- struct{}{}:
+			default:
 			}
 		})
 	}
@@ -276,6 +288,20 @@ func (e *Engine) Start(ctx context.Context) error {
 				e.broadcastProposal(rs, prevRoot, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 			}
 			persistRoundState(e.sm, rs)
+
+		case <-e.proposeReady:
+			// A delayed self-proposal from startNextRound or the resume-
+			// on-Propose case above (see proposeReady's field docs). Guard
+			// on Phase: by the time this fires, an externally-received
+			// proposal may already have moved rs past PhasePropose, in
+			// which case there's nothing to do.
+			if rs.Phase == PhasePropose {
+				prevRoot = e.prevStateRoot()
+				proposerPK, _ = leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
+				if proposerPK == e.kp.PublicKey {
+					e.broadcastProposal(rs, prevRoot, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+				}
+			}
 		}
 	}
 }
@@ -395,6 +421,21 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 						return
 					}
 					e.startNextRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+				} else {
+					// e.commit already logs why ApplyBlockForChain failed
+					// (see its own log.Printf). Without this branch, a
+					// failed commit left rs.Phase stuck at PhaseCommit
+					// forever -- nothing schedules another proposal, vote,
+					// or timeout, so the engine's select loop just parks
+					// indefinitely and the chain halts at this height.
+					// Reproduced live: a contract call whose WASM traps
+					// (a deterministic, guaranteed-to-fail-again proposal)
+					// wedged a real devnet exactly this way. Mirrors the
+					// sibling "no quorum on a real block" case right below.
+					e.rejectProposal(rs)
+					if err := e.restartRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer); err != nil {
+						return
+					}
 				}
 			} else {
 				e.rejectProposal(rs)
@@ -563,7 +604,27 @@ func (e *Engine) restartRound(rs *RoundState, validators [][32]byte, stakes []*b
 	if err != nil {
 		return err
 	}
-	e.startNextRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+	// Retries the SAME height with a new round -- NOT startNextRound, which
+	// advances rs.Height. A commit failure means ApplyBlockForChain rolled
+	// back and the statemachine's real committed height is unchanged, so
+	// bumping rs.Height here desyncs consensus's view of the current height
+	// from the statemachine's: every subsequent proposal would then be built
+	// for a height ApplyBlockForChain's `cur+1` check can never accept, and
+	// since that mismatch is caught before touching votes at all, nothing
+	// ever logs it or reaches another commit attempt -- the engine just
+	// parks in its select loop forever, permanently stalling the chain.
+	// Mirrors the precommitTimer-timeout case above, the other "retry this
+	// height" path, which already gets this right.
+	rs.Unlock() // the rejected proposal just failed deterministically; don't let a lock force re-proposing the exact same bad block.
+	rs.IncrementRound()
+	e.setStatus(rs)
+	prevRoot := e.prevStateRoot()
+	proposerPK, _ := leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
+	proposeTimer.Reset(e.timeouts.Propose)
+	if proposerPK == e.kp.PublicKey {
+		e.broadcastProposal(rs, prevRoot, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+	}
+	persistRoundState(e.sm, rs)
 	return nil
 }
 
@@ -598,11 +659,12 @@ func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []
 	proposerPK, _ := leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
 	proposeTimer.Reset(e.timeouts.Propose)
 	if proposerPK == e.kp.PublicKey {
-		rsCopy := rs
-		rootCopy := prevRoot
+		// See proposeReady's field docs: must not call broadcastProposal
+		// directly from this callback's own goroutine.
 		time.AfterFunc(e.timeouts.ProposeDelay, func() {
-			if rsCopy.Phase == PhasePropose {
-				e.broadcastProposal(rsCopy, rootCopy, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+			select {
+			case e.proposeReady <- struct{}{}:
+			default:
 			}
 		})
 	}
