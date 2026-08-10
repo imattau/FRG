@@ -58,6 +58,8 @@ wallet/      — Go wallet SDK and faucet helper
 
 **CONTRACT_CALL** (`Type=4`) — calls a deployed WASM contract. The current dispatcher selects the exported function from the first four calldata bytes. Contracts can call the `frg.bn254_pairing_check(ptr,len)` host precompile with repeated 192-byte `(G1.Marshal || G2.Marshal)` pairs; it returns `1` when the product of pairings equals one, `0` for a valid false check, and `-1` for malformed input or insufficient gas.
 
+Contract compute gas uses a fixed consensus conversion of Wasmtime fuel to protocol gas. See [Protocol Gas Calibration](docs/protocol-gas.md).
+
 **BOND** (`Type=5`) — locks the sender's stake in escrow and activates the sender pubkey as a validator once the minimum bond is met.
 
 **UNBOND** (`Type=6`) — starts the validator unbonding lockup and removes the validator from the active proposer set.

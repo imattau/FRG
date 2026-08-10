@@ -12,6 +12,11 @@ import (
 )
 
 const maxFuel = 100_000_000_000
+
+// FuelUnitsPerGas converts deterministic Wasmtime fuel into protocol gas.
+// This is a consensus/economic calibration constant: update it only through a
+// protocol upgrade after rerunning the benchmark suite documented in
+// docs/protocol-gas.md.
 const FuelUnitsPerGas = 1000
 
 type Runtime struct {
