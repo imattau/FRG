@@ -12,13 +12,14 @@ import (
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	bolt "go.etcd.io/bbolt"
+	"golang.org/x/crypto/bn256"
 )
 
 //go:embed workloads/*.wasm
 var workloads embed.FS
 
 func BenchmarkFuelCalibration(b *testing.B) {
-	workloadList := []string{"trivial", "arithmetic", "memory", "hashing", "state_read", "state_write", "heavy"}
+	workloadList := []string{"trivial", "arithmetic", "memory", "hashing", "state_read", "state_write", "heavy", "bn254_pairing"}
 	for _, wl := range workloadList {
 		b.Run(wl, func(b *testing.B) {
 			db, err := bolt.Open(b.TempDir()+"/fuel_bench.db", 0600, nil)
@@ -86,8 +87,29 @@ func BenchmarkFuelCalibration(b *testing.B) {
 	}
 }
 
+func BenchmarkBn254PairingPrecompile(b *testing.B) {
+	g1 := new(bn256.G1).ScalarBaseMult(big.NewInt(1))
+	negG1 := new(bn256.G1).Neg(g1)
+	g2 := new(bn256.G2).ScalarBaseMult(big.NewInt(1))
+
+	input := append(append([]byte{}, g1.Marshal()...), g2.Marshal()...)
+	input = append(input, negG1.Marshal()...)
+	input = append(input, g2.Marshal()...)
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		ok, err := contract.Bn254PairingCheck(input)
+		if err != nil {
+			b.Fatalf("pairing check: %v", err)
+		}
+		if !ok {
+			b.Fatal("expected pairing product to equal one")
+		}
+	}
+}
+
 func TestFuelCostModel(t *testing.T) {
-	workloadList := []string{"trivial", "arithmetic", "memory", "hashing", "state_read", "state_write", "heavy"}
+	workloadList := []string{"trivial", "arithmetic", "memory", "hashing", "state_read", "state_write", "heavy", "bn254_pairing"}
 	const reps = 50
 
 	type result struct {

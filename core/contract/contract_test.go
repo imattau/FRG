@@ -2,7 +2,9 @@ package contract_test
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/bytecodealliance/wasmtime-go/v28"
@@ -12,6 +14,7 @@ import (
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/tx"
 	bolt "go.etcd.io/bbolt"
+	"golang.org/x/crypto/bn256"
 )
 
 // minimalWasm builds a valid WASM module that exports "init" (no-op) and "call" (no-op).
@@ -280,6 +283,181 @@ func TestRuntimeOutOfFuelUsesContractGasError(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("runtime call: %v", err)
 	}
+}
+
+func TestBn254PairingCheck(t *testing.T) {
+	g1 := new(bn256.G1).ScalarBaseMult(big.NewInt(1))
+	negG1 := new(bn256.G1).Neg(g1)
+	g2 := new(bn256.G2).ScalarBaseMult(big.NewInt(1))
+
+	input := append(append([]byte{}, g1.Marshal()...), g2.Marshal()...)
+	input = append(input, negG1.Marshal()...)
+	input = append(input, g2.Marshal()...)
+
+	ok, err := contract.Bn254PairingCheck(input)
+	if err != nil {
+		t.Fatalf("pairing check: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected pairing product to equal one")
+	}
+
+	ok, err = contract.Bn254PairingCheck(append(append([]byte{}, g1.Marshal()...), g2.Marshal()...))
+	if err != nil {
+		t.Fatalf("single pairing check: %v", err)
+	}
+	if ok {
+		t.Fatal("expected single generator pairing not to equal one")
+	}
+
+	if _, err := contract.Bn254PairingCheck([]byte{1, 2, 3}); err == nil {
+		t.Fatal("expected malformed input error")
+	}
+}
+
+func TestRuntimeBn254PairingPrecompile(t *testing.T) {
+	g1 := new(bn256.G1).ScalarBaseMult(big.NewInt(1))
+	negG1 := new(bn256.G1).Neg(g1)
+	g2 := new(bn256.G2).ScalarBaseMult(big.NewInt(1))
+
+	input := append(append([]byte{}, g1.Marshal()...), g2.Marshal()...)
+	input = append(input, negG1.Marshal()...)
+	input = append(input, g2.Marshal()...)
+
+	wasmBytes, err := wasmtime.Wat2Wasm(fmt.Sprintf(`
+		(module
+		  (import "frg" "bn254_pairing_check" (func $bn254_pairing_check (param i32 i32) (result i32)))
+		  (memory (export "memory") 1)
+		  (data (i32.const 0) "%s")
+		  (func (export "init"))
+		  (func (export "call")
+		    (call $bn254_pairing_check (i32.const 0) (i32.const %d))
+		    (drop)
+		  )
+		)
+	`, watDataString(input), len(input)))
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := contract.NewStateStore()
+	var fuelUsed uint64
+	if err := db.Update(func(btx *bolt.Tx) error {
+		cost, err := contract.Bn254PairingFuel(len(input))
+		if err != nil {
+			return err
+		}
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   wasmBytes,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       store,
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    cost/contract.FuelUnitsPerGas + 100,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := rt.Call("call"); err != nil {
+			return err
+		}
+		fuelUsed = rt.FuelConsumed()
+		return nil
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
+
+	expected, err := contract.Bn254PairingFuel(len(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fuelUsed < expected {
+		t.Fatalf("fuelUsed=%d, want at least precompile charge %d", fuelUsed, expected)
+	}
+}
+
+func TestRuntimeBn254PairingPrecompileOutOfGas(t *testing.T) {
+	wasmBytes, err := wasmtime.Wat2Wasm(`
+		(module
+		  (import "frg" "bn254_pairing_check" (func $bn254_pairing_check (param i32 i32) (result i32)))
+		  (memory (export "memory") 1)
+		  (func (export "init"))
+		  (func (export "call")
+		    (call $bn254_pairing_check (i32.const 0) (i32.const 0))
+		    (drop)
+		  )
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := contract.NewStateStore()
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   wasmBytes,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       store,
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    1,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = rt.Call("call")
+		var rgErr *rgerrors.RGError
+		if !errors.As(err, &rgErr) || rgErr.Code != rgerrors.ErrContractOutOfGas {
+			t.Fatalf("expected %s, got %v", rgerrors.ErrContractOutOfGas, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
+}
+
+func watDataString(data []byte) string {
+	var b strings.Builder
+	for _, c := range data {
+		fmt.Fprintf(&b, "\\%02x", c)
+	}
+	return b.String()
 }
 
 func TestLoadStateValue(t *testing.T) {

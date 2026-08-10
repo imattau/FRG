@@ -56,7 +56,7 @@ wallet/      — Go wallet SDK and faucet helper
 
 **CONTRACT_DEPLOY** (`Type=3`) — deploys deterministic WASM bytecode and derives the contract address from the sender pubkey and nonce.
 
-**CONTRACT_CALL** (`Type=4`) — calls a deployed WASM contract. The current dispatcher selects the exported function from the first four calldata bytes.
+**CONTRACT_CALL** (`Type=4`) — calls a deployed WASM contract. The current dispatcher selects the exported function from the first four calldata bytes. Contracts can call the `frg.bn254_pairing_check(ptr,len)` host precompile with repeated 192-byte `(G1.Marshal || G2.Marshal)` pairs; it returns `1` when the product of pairings equals one, `0` for a valid false check, and `-1` for malformed input or insufficient gas.
 
 **BOND** (`Type=5`) — locks the sender's stake in escrow and activates the sender pubkey as a validator once the minimum bond is met.
 

@@ -183,6 +183,45 @@ func (r *Runtime) defineHostFunctions(cfg *RuntimeConfig) {
 		}
 		return 0
 	})
+
+	r.linker.FuncWrap("frg", "bn254_pairing_check", func(caller *wasmtime.Caller, inputPtr int32, inputLen int32) int32 {
+		mem := mustMem(caller)
+		input, ok := readMem(mem, caller, inputPtr, inputLen)
+		if !ok {
+			return -1
+		}
+		cost, err := Bn254PairingFuel(len(input))
+		if err != nil {
+			return -1
+		}
+		if err := r.chargeFuel(cost); err != nil {
+			r.hostErr = err
+			return -1
+		}
+		valid, err := Bn254PairingCheck(input)
+		if err != nil {
+			return -1
+		}
+		if valid {
+			return 1
+		}
+		return 0
+	})
+}
+
+func (r *Runtime) chargeFuel(fuel uint64) error {
+	remaining, err := r.store.GetFuel()
+	if err != nil {
+		return fmt.Errorf("%w: read fuel: %v", rgerrors.New(rgerrors.ErrContractOutOfGas, ""), err)
+	}
+	if remaining < fuel {
+		_ = r.store.SetFuel(0)
+		return rgerrors.Newf(rgerrors.ErrContractOutOfGas, "bn254 pairing precompile needs %d fuel, remaining %d", fuel, remaining)
+	}
+	if err := r.store.SetFuel(remaining - fuel); err != nil {
+		return fmt.Errorf("%w: charge fuel: %v", rgerrors.New(rgerrors.ErrContractOutOfGas, ""), err)
+	}
+	return nil
 }
 
 func mustMem(caller *wasmtime.Caller) *wasmtime.Memory {
@@ -258,6 +297,10 @@ func (r *Runtime) Call(functionName string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractTrap, ""), err)
 	}
 	if r.hostErr != nil {
+		var rgErr *rgerrors.RGError
+		if errors.As(r.hostErr, &rgErr) {
+			return nil, r.hostErr
+		}
 		return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractStateInvalid, ""), r.hostErr)
 	}
 
