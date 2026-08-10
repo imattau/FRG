@@ -55,8 +55,14 @@ Read tools:
 - `frg_get_status`
 - `frg_get_account`
 - `frg_list_validators`
+- `frg_list_mempool`
+- `frg_operator_health`
+- `frg_operator_readiness`
 - `frg_get_contract_state`
 - `frg_predict_contract_address`
+- `frg_work_schema`
+- `frg_work_build_terms`
+- `frg_work_state`
 - `frg_request_faucet`
 
 Autonomous tools:
@@ -65,8 +71,38 @@ Autonomous tools:
 - `frg_bond`
 - `frg_contract_deploy`
 - `frg_contract_call`
+- `frg_work_action`
 
 Autonomous tools sign with the MCP wallet key and submit to the configured FRG node. Use `allowed_recipients` and `allowed_contracts` when an agent should only interact with known peers or coordination contracts.
+
+## Operator Tools
+
+Use `frg_operator_readiness` to check whether the MCP wallet or a supplied pubkey looks ready to operate as a validator:
+
+```json
+{
+  "validator_pubkey": "optional pubkey",
+  "min_bond": "1000"
+}
+```
+
+It checks account funding, bonded status, minimum bond, validator set presence, peer count, mempool length, consensus phase, and whether the node is running in `grpc_only` mode.
+
+Use `frg_operator_health` for basic node health. If the MCP server is started with `--metrics-url http://127.0.0.1:9090`, it also checks `/readyz`.
+
+## Agent Work Contracts
+
+`frg_work_schema` describes the first FRG agent-work convention:
+
+- actions: `post`, `accept`, `submit`, `approve`, `reject`, `claim`, `cancel`
+- 4-byte selectors: `post`, `acpt`, `subm`, `aprv`, `rejc`, `clai`, `cncl`
+- state keys: `payer`, `worker`, `reward`, `deadline`, `status`, `terms_hash`, `result_hash`, `verifier`
+
+`frg_work_build_terms` creates canonical off-chain terms and a SHA-256 `terms_hash`. Agents can share this hash before posting work or store it in a contract that follows the convention.
+
+`frg_work_state` queries the standard state keys from a work contract.
+
+`frg_work_action` calls one standard action on a work contract. The current FRG contract dispatcher selects the exported function from the first four calldata bytes. Rich payloads such as full terms, result bodies, or verifier reports should be hashed off-chain and represented on-chain by convention keys unless a specific contract implements more storage behavior.
 
 ## Agent-To-Agent Use
 

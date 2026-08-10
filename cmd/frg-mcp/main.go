@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net/http"
 	"net/textproto"
 	"os"
 	"strconv"
@@ -41,9 +43,10 @@ type policy struct {
 }
 
 type mcpServer struct {
-	w         *wallet.Wallet
-	faucetURL string
-	policy    *policy
+	w          *wallet.Wallet
+	faucetURL  string
+	metricsURL string
+	policy     *policy
 }
 
 type rpcRequest struct {
@@ -94,6 +97,7 @@ func main() {
 	policyPath := flag.String("policy", "", "optional JSON policy file for autonomous spending")
 	autonomous := flag.Bool("autonomous", false, "enable submit/call tools with default zero-value spending limit unless policy raises it")
 	faucetURL := flag.String("faucet-url", "", "optional faucet URL for frg_request_faucet")
+	metricsURL := flag.String("metrics-url", "", "optional node metrics base URL for operator health, e.g. http://127.0.0.1:9090")
 	flag.Parse()
 
 	log.SetOutput(os.Stderr)
@@ -126,7 +130,7 @@ func main() {
 	}
 	defer client.Close()
 
-	s := &mcpServer{w: client.Wallet, faucetURL: *faucetURL, policy: pol}
+	s := &mcpServer{w: client.Wallet, faucetURL: *faucetURL, metricsURL: strings.TrimRight(*metricsURL, "/"), policy: pol}
 	if err := s.serve(os.Stdin, os.Stdout); err != nil && err != io.EOF {
 		log.Fatalf("serve MCP: %v", err)
 	}
@@ -276,12 +280,29 @@ func (s *mcpServer) tools() []tool {
 		readTool("frg_get_status", "Return FRG node status.", objectSchema(nil, nil)),
 		readTool("frg_get_account", "Return account balance and nonce. Defaults to this agent wallet.", objectSchema(map[string]any{"pubkey": stringSchema("32-byte public key hex")}, nil)),
 		readTool("frg_list_validators", "List active bonded validators.", objectSchema(nil, nil)),
+		readTool("frg_list_mempool", "List pending mempool transaction IDs, sender labels, and nonces.", objectSchema(nil, nil)),
+		readTool("frg_operator_health", "Check gRPC status and optional metrics /readyz health.", objectSchema(nil, nil)),
+		readTool("frg_operator_readiness", "Diagnose whether this wallet/node appears ready to operate as a validator.", objectSchema(map[string]any{
+			"validator_pubkey": stringSchema("optional validator pubkey hex; defaults to this MCP wallet"),
+			"min_bond":         stringSchema("optional minimum bond amount; default 1000"),
+		}, nil)),
 		readTool("frg_get_contract_state", "Query contract existence, state root, and optionally one state key.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
 			"key":              stringSchema("optional text key, max 32 bytes"),
 			"key_hex":          stringSchema("optional raw key hex, max 32 bytes"),
 		}, []string{"contract_address"})),
 		readTool("frg_predict_contract_address", "Predict this wallet's contract address for a nonce, defaulting to next nonce.", objectSchema(map[string]any{"nonce": stringSchema("optional deploy nonce")}, nil)),
+		readTool("frg_work_schema", "Return the standard FRG agent work escrow contract convention.", objectSchema(nil, nil)),
+		readTool("frg_work_build_terms", "Build canonical off-chain work terms and a SHA-256 terms hash.", objectSchema(map[string]any{
+			"description":         stringSchema("work description"),
+			"reward":              stringSchema("base-10 reward amount"),
+			"deadline":            stringSchema("deadline or block height string"),
+			"verifier":            stringSchema("optional verifier pubkey hex"),
+			"result_requirements": stringSchema("expected result format or acceptance criteria"),
+		}, []string{"description", "reward"})),
+		readTool("frg_work_state", "Query standard agent work escrow state keys from a contract.", objectSchema(map[string]any{
+			"contract_address": stringSchema("32-byte contract address hex"),
+		}, []string{"contract_address"})),
 		writeTool("frg_transfer", "Autonomously send FRG if policy allows it.", objectSchema(map[string]any{"to": stringSchema("recipient pubkey hex"), "amount": stringSchema("base-10 quanta")}, []string{"to", "amount"})),
 		writeTool("frg_bond", "Autonomously bond this wallet as a validator if policy allows it.", objectSchema(map[string]any{"amount": stringSchema("base-10 quanta")}, []string{"amount"})),
 		writeTool("frg_contract_deploy", "Autonomously deploy a WASM contract if policy allows it.", objectSchema(map[string]any{"wasm_hex": stringSchema("WASM bytes as hex"), "value": stringSchema("optional endowment")}, []string{"wasm_hex"})),
@@ -291,6 +312,11 @@ func (s *mcpServer) tools() []tool {
 			"call_data_hex":    stringSchema("optional raw calldata hex"),
 			"value":            stringSchema("optional FRG value"),
 		}, []string{"contract_address"})),
+		writeTool("frg_work_action", "Call a standard agent work escrow action if policy allows it.", objectSchema(map[string]any{
+			"contract_address": stringSchema("32-byte contract address hex"),
+			"action":           stringSchema("post, accept, submit, approve, reject, claim, or cancel"),
+			"value":            stringSchema("optional FRG value, e.g. escrow reward on post"),
+		}, []string{"contract_address", "action"})),
 		readTool("frg_request_faucet", "Request faucet funds for this wallet or a supplied pubkey, if --faucet-url is configured.", objectSchema(map[string]any{"pubkey": stringSchema("optional 32-byte pubkey hex")}, nil)),
 	}
 }
@@ -354,6 +380,31 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 			return nil, err
 		}
 		return jsonTool(formatValidators(resp))
+	case "frg_list_mempool":
+		resp, err := s.w.Mempool(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(formatMempool(resp))
+	case "frg_operator_health":
+		resp, err := s.operatorHealth(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(resp)
+	case "frg_operator_readiness":
+		var in struct {
+			ValidatorPubkey string `json:"validator_pubkey"`
+			MinBond         string `json:"min_bond"`
+		}
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		resp, err := s.operatorReadiness(ctx, in.ValidatorPubkey, in.MinBond)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(resp)
 	case "frg_get_contract_state":
 		var in struct {
 			ContractAddress string `json:"contract_address"`
@@ -389,6 +440,34 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		}
 		addr := s.w.ContractAddress(nonce)
 		return jsonTool(map[string]any{"nonce": nonce, "contract_address": hex.EncodeToString(addr[:])})
+	case "frg_work_schema":
+		return jsonTool(workSchema())
+	case "frg_work_build_terms":
+		var in workTerms
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		resp, err := buildWorkTerms(in)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(resp)
+	case "frg_work_state":
+		var in struct {
+			ContractAddress string `json:"contract_address"`
+		}
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		addr, err := wallet.DecodePubKey(in.ContractAddress)
+		if err != nil {
+			return nil, fmt.Errorf("contract_address must be 32-byte hex")
+		}
+		resp, err := s.workState(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(resp)
 	case "frg_transfer":
 		var in struct {
 			To     string `json:"to"`
@@ -490,6 +569,42 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		}
 		s.policy.recordSpend(value)
 		return jsonTool(resp)
+	case "frg_work_action":
+		var in struct {
+			ContractAddress string `json:"contract_address"`
+			Action          string `json:"action"`
+			Value           string `json:"value"`
+		}
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		addr, err := wallet.DecodePubKey(in.ContractAddress)
+		if err != nil {
+			return nil, fmt.Errorf("contract_address must be 32-byte hex")
+		}
+		selector, err := workActionSelector(in.Action)
+		if err != nil {
+			return nil, err
+		}
+		value, err := parseOptionalAmount(in.Value)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.policy.allowSpend("contract_call", in.ContractAddress, value, false, false); err != nil {
+			return nil, err
+		}
+		resp, err := s.w.CallContract(ctx, addr, []byte(selector), value)
+		if err != nil {
+			return nil, err
+		}
+		s.policy.recordSpend(value)
+		return jsonTool(map[string]any{
+			"action":   in.Action,
+			"selector": selector,
+			"txid":     resp.TxID,
+			"value":    value.String(),
+			"contract": strings.ToLower(in.ContractAddress),
+		})
 	case "frg_request_faucet":
 		if s.faucetURL == "" {
 			return nil, fmt.Errorf("faucet URL is not configured")
@@ -609,6 +724,261 @@ func (s *mcpServer) resolveNonce(ctx context.Context, raw string) (uint64, error
 		return 0, err
 	}
 	return acct.Nonce + 1, nil
+}
+
+type operatorHealthResponse struct {
+	GRPCOK         bool   `json:"grpc_ok"`
+	MetricsURL     string `json:"metrics_url,omitempty"`
+	ReadyzOK       bool   `json:"readyz_ok,omitempty"`
+	ReadyzStatus   int    `json:"readyz_status,omitempty"`
+	ReadyzMessage  string `json:"readyz_message,omitempty"`
+	Height         uint64 `json:"height,omitempty"`
+	PeerCount      uint64 `json:"peer_count,omitempty"`
+	ConsensusPhase string `json:"consensus_phase,omitempty"`
+}
+
+func (s *mcpServer) operatorHealth(ctx context.Context) (*operatorHealthResponse, error) {
+	status, err := s.w.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := &operatorHealthResponse{
+		GRPCOK:         true,
+		MetricsURL:     s.metricsURL,
+		Height:         status.Height,
+		PeerCount:      status.PeerCount,
+		ConsensusPhase: status.ConsensusPhase,
+	}
+	if s.metricsURL == "" {
+		return out, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.metricsURL+"/readyz", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		out.ReadyzMessage = err.Error()
+		return out, nil
+	}
+	defer resp.Body.Close()
+	out.ReadyzStatus = resp.StatusCode
+	out.ReadyzOK = resp.StatusCode >= 200 && resp.StatusCode < 300
+	return out, nil
+}
+
+type readinessResponse struct {
+	Ready           bool            `json:"ready"`
+	ValidatorPubkey string          `json:"validator_pubkey"`
+	Account         accountResponse `json:"account"`
+	Bonded          bool            `json:"bonded"`
+	Bond            string          `json:"bond"`
+	MinBond         string          `json:"min_bond"`
+	NodeHeight      uint64          `json:"node_height"`
+	PeerCount       uint64          `json:"peer_count"`
+	MempoolLen      uint64          `json:"mempool_len"`
+	ValidatorCount  uint64          `json:"validator_count"`
+	ConsensusPhase  string          `json:"consensus_phase"`
+	Checks          []string        `json:"checks"`
+	Warnings        []string        `json:"warnings,omitempty"`
+	Actions         []string        `json:"actions,omitempty"`
+}
+
+func (s *mcpServer) operatorReadiness(ctx context.Context, validatorHex string, minBondRaw string) (*readinessResponse, error) {
+	minBond, err := parseOptionalAmount(minBondRaw)
+	if err != nil {
+		return nil, err
+	}
+	if minBond.Sign() == 0 {
+		minBond = big.NewInt(1000)
+	}
+	validator := s.w.PublicKey()
+	if validatorHex != "" {
+		validator, err = wallet.DecodePubKey(validatorHex)
+		if err != nil {
+			return nil, err
+		}
+	}
+	statusResp, err := s.w.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	acct, err := s.w.Account(ctx, validator)
+	if err != nil {
+		return nil, err
+	}
+	vals, err := s.w.Validators(ctx)
+	if err != nil {
+		return nil, err
+	}
+	validatorHex = hex.EncodeToString(validator[:])
+	out := &readinessResponse{
+		Ready:           true,
+		ValidatorPubkey: validatorHex,
+		Account:         formatAccount(acct),
+		MinBond:         minBond.String(),
+		NodeHeight:      statusResp.Height,
+		PeerCount:       statusResp.PeerCount,
+		MempoolLen:      statusResp.MempoolLen,
+		ValidatorCount:  statusResp.ValidatorCount,
+		ConsensusPhase:  statusResp.ConsensusPhase,
+	}
+	for _, v := range vals.Validators {
+		if v == nil || hex.EncodeToString(v.Pubkey) != validatorHex {
+			continue
+		}
+		out.Bonded = true
+		out.Bond = v.Bond
+		break
+	}
+	bal, _ := new(big.Int).SetString(acct.Balance, 10)
+	if bal == nil {
+		bal = big.NewInt(0)
+	}
+	bond, _ := new(big.Int).SetString(out.Bond, 10)
+	if bond == nil {
+		bond = big.NewInt(0)
+	}
+	addCheck := func(ok bool, check, action string) {
+		if ok {
+			out.Checks = append(out.Checks, check+": ok")
+			return
+		}
+		out.Ready = false
+		out.Checks = append(out.Checks, check+": failed")
+		if action != "" {
+			out.Actions = append(out.Actions, action)
+		}
+	}
+	addCheck(statusResp.ValidatorCount > 0, "validator set present", "confirm genesis or bonded validators")
+	addCheck(bal.Sign() > 0 || out.Bonded, "validator account funded or bonded", "fund "+validatorHex+" before bonding")
+	addCheck(out.Bonded, "validator bonded", "submit frg_bond with at least "+minBond.String())
+	addCheck(!out.Bonded || bond.Cmp(minBond) >= 0, "bond meets minimum", "increase bond to at least "+minBond.String())
+	if statusResp.GrpcOnly {
+		out.Warnings = append(out.Warnings, "node is running in grpc_only mode and will not participate in P2P consensus")
+	}
+	if statusResp.PeerCount == 0 && statusResp.ValidatorCount > 1 {
+		out.Warnings = append(out.Warnings, "no peers connected on a multi-validator network")
+	}
+	if statusResp.ConsensusPhase == "" {
+		out.Warnings = append(out.Warnings, "consensus phase is empty")
+	}
+	return out, nil
+}
+
+type mempoolEntry struct {
+	TxID   string `json:"txid"`
+	Sender string `json:"sender"`
+	Nonce  uint64 `json:"nonce"`
+}
+
+type mempoolResponse struct {
+	Entries []mempoolEntry `json:"entries"`
+}
+
+func formatMempool(resp *frgpb.MempoolList) mempoolResponse {
+	out := mempoolResponse{Entries: make([]mempoolEntry, 0, len(resp.Entries))}
+	for _, e := range resp.Entries {
+		if e == nil {
+			continue
+		}
+		out.Entries = append(out.Entries, mempoolEntry{
+			TxID:   hex.EncodeToString(e.Txid),
+			Sender: e.Sender,
+			Nonce:  e.Nonce,
+		})
+	}
+	return out
+}
+
+type workTerms struct {
+	Description        string `json:"description"`
+	Reward             string `json:"reward"`
+	Deadline           string `json:"deadline"`
+	Verifier           string `json:"verifier"`
+	ResultRequirements string `json:"result_requirements"`
+}
+
+type workTermsResponse struct {
+	Terms     workTerms `json:"terms"`
+	Canonical string    `json:"canonical"`
+	TermsHash string    `json:"terms_hash"`
+}
+
+func buildWorkTerms(in workTerms) (*workTermsResponse, error) {
+	in.Description = strings.TrimSpace(in.Description)
+	in.Reward = strings.TrimSpace(in.Reward)
+	if in.Description == "" {
+		return nil, fmt.Errorf("description is required")
+	}
+	if _, err := parsePositiveAmount(in.Reward); err != nil {
+		return nil, err
+	}
+	canonicalBytes, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(canonicalBytes)
+	return &workTermsResponse{
+		Terms:     in,
+		Canonical: string(canonicalBytes),
+		TermsHash: hex.EncodeToString(sum[:]),
+	}, nil
+}
+
+func workSchema() map[string]any {
+	return map[string]any{
+		"name": "frg.agent_work.v1",
+		"selectors": map[string]string{
+			"post":    "post",
+			"accept":  "acpt",
+			"submit":  "subm",
+			"approve": "aprv",
+			"reject":  "rejc",
+			"claim":   "clai",
+			"cancel":  "cncl",
+		},
+		"state_keys": workStateKeys,
+		"notes": []string{
+			"selectors are the first four calldata bytes used by the current FRG contract dispatcher",
+			"terms_hash and result_hash are convention state keys; full payloads remain off-chain unless a contract stores them",
+		},
+	}
+}
+
+var workStateKeys = []string{"payer", "worker", "reward", "deadline", "status", "terms_hash", "result_hash", "verifier"}
+
+func (s *mcpServer) workState(ctx context.Context, contractAddr [32]byte) (map[string]contractStateResponse, error) {
+	out := make(map[string]contractStateResponse, len(workStateKeys))
+	for _, key := range workStateKeys {
+		resp, err := s.w.ContractState(ctx, contractAddr, []byte(key))
+		if err != nil {
+			return nil, err
+		}
+		out[key] = formatContractState(resp)
+	}
+	return out, nil
+}
+
+func workActionSelector(action string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "post":
+		return "post", nil
+	case "accept":
+		return "acpt", nil
+	case "submit":
+		return "subm", nil
+	case "approve":
+		return "aprv", nil
+	case "reject":
+		return "rejc", nil
+	case "claim":
+		return "clai", nil
+	case "cancel":
+		return "cncl", nil
+	default:
+		return "", fmt.Errorf("unknown work action %q", action)
+	}
 }
 
 func (p *policy) allowSpend(action string, target string, amount *big.Int, bond bool, deploy bool) error {

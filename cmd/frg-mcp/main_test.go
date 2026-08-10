@@ -90,3 +90,51 @@ func TestDecodeKeyRejectsAmbiguousInput(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestWorkActionSelector(t *testing.T) {
+	got, err := workActionSelector("approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "aprv" {
+		t.Fatalf("selector = %q", got)
+	}
+	if _, err := workActionSelector("unknown"); err == nil {
+		t.Fatal("expected unknown action error")
+	}
+}
+
+func TestBuildWorkTermsStableHash(t *testing.T) {
+	terms := workTerms{
+		Description:        "render report",
+		Reward:             "25",
+		Deadline:           "120",
+		Verifier:           strings.Repeat("a", 64),
+		ResultRequirements: "sha256 artifact hash",
+	}
+	first, err := buildWorkTerms(terms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildWorkTerms(terms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TermsHash == "" || first.TermsHash != second.TermsHash {
+		t.Fatalf("unstable terms hash: %q vs %q", first.TermsHash, second.TermsHash)
+	}
+	if !strings.Contains(first.Canonical, "render report") {
+		t.Fatalf("canonical terms missing description: %s", first.Canonical)
+	}
+}
+
+func TestWorkSchemaContainsSelectors(t *testing.T) {
+	schema := workSchema()
+	selectors, ok := schema["selectors"].(map[string]string)
+	if !ok {
+		t.Fatalf("selectors type = %T", schema["selectors"])
+	}
+	if selectors["accept"] != "acpt" || selectors["claim"] != "clai" {
+		t.Fatalf("unexpected selectors: %#v", selectors)
+	}
+}

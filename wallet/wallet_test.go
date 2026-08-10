@@ -20,6 +20,7 @@ type fakeClient struct {
 	contractState *frgpb.ContractStateResponse
 	status        *frgpb.StatusResponse
 	vals          *frgpb.ValidatorList
+	mempool       *frgpb.MempoolList
 	tx            *tx.Tx
 }
 
@@ -72,7 +73,10 @@ func (f *fakeClient) ListValidators(context.Context, *frgpb.Empty, ...grpc.CallO
 }
 
 func (f *fakeClient) ListMempool(context.Context, *frgpb.Empty, ...grpc.CallOption) (*frgpb.MempoolList, error) {
-	return nil, errors.New("not implemented")
+	if f.mempool == nil {
+		return &frgpb.MempoolList{}, nil
+	}
+	return f.mempool, nil
 }
 
 func TestSaveSeedAndLoadKeypair(t *testing.T) {
@@ -284,5 +288,24 @@ func TestContractStateQueriesNode(t *testing.T) {
 	}
 	if !resp.Exists || !resp.Found || string(resp.Key) != "count" || len(resp.Value) != 1 || resp.Value[0] != 7 {
 		t.Fatalf("unexpected contract state response: %+v", resp)
+	}
+}
+
+func TestMempoolQueriesNode(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeClient{mempool: &frgpb.MempoolList{Entries: []*frgpb.MempoolEntry{{Sender: "alice", Nonce: 3}}}}
+	w, err := New(kp, fc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := w.Mempool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 1 || resp.Entries[0].Sender != "alice" || resp.Entries[0].Nonce != 3 {
+		t.Fatalf("unexpected mempool response: %+v", resp)
 	}
 }

@@ -149,6 +149,10 @@ func (w *Wallet) Validators(ctx context.Context) (*frgpb.ValidatorList, error) {
 	return w.client.ListValidators(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
 }
 
+func (w *Wallet) Mempool(ctx context.Context) (*frgpb.MempoolList, error) {
+	return w.client.ListMempool(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+}
+
 func (w *Wallet) ContractState(ctx context.Context, contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error) {
 	return w.client.GetContractState(ctx, &frgpb.ContractStateRequest{
 		ContractAddress: contractAddr[:],
