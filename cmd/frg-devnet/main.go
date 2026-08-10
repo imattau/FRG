@@ -16,7 +16,9 @@ import (
 	"github.com/imattau/frg/core/keys"
 )
 
-const configTemplate = `[node]
+const configTemplate = `chain_id = "%s"
+
+[node]
 keypair_path = "frg.key"
 db_path = "frg.db"
 genesis_path = "genesis.json"
@@ -35,8 +37,6 @@ propose_delay_ms = 500
 propose_timeout_ms = 3000
 prevote_timeout_ms = 3000
 precommit_timeout_ms = 3000
-
-chain_id = "%s"
 `
 
 type devNode struct {
@@ -161,7 +161,7 @@ func main() {
 		}
 
 		peers := buildPeerList(nodes, nd.index, *dockerCompose)
-		cfg := fmt.Sprintf(configTemplate, nd.p2pPort, peers, nd.grpcPort, *chainID)
+		cfg := fmt.Sprintf(configTemplate, *chainID, nd.p2pPort, peers, nd.grpcPort)
 		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(cfg), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "write config for node %d: %v\n", nd.index, err)
 			os.Exit(1)
