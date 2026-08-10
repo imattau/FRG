@@ -1,10 +1,13 @@
 package contract_test
 
 import (
+	"errors"
 	"math/big"
 	"testing"
 
+	"github.com/bytecodealliance/wasmtime-go/v28"
 	"github.com/imattau/frg/core/contract"
+	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/tx"
@@ -175,6 +178,108 @@ func TestContractDeployAndCall(t *testing.T) {
 
 	t.Logf("stateRoot after deploy: %x", stateRoot)
 	t.Logf("stateRoot after call:   %x", callRoot)
+}
+
+func TestRuntimeConsumesFuel(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := contract.NewStateStore()
+	var fuelUsed uint64
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   minimalWasm,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       store,
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    1000,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := rt.Call("call"); err != nil {
+			return err
+		}
+		fuelUsed = rt.FuelConsumed()
+		return nil
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
+	if fuelUsed == 0 {
+		t.Fatal("expected WASM execution to consume fuel")
+	}
+}
+
+func TestRuntimeOutOfFuelUsesContractGasError(t *testing.T) {
+	loopWasm, err := wasmtime.Wat2Wasm(`
+		(module
+		  (func (export "call")
+		    (loop $again
+		      br $again
+		    )
+		  )
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := contract.NewStateStore()
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   loopWasm,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       store,
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    1,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = rt.Call("call")
+		var rgErr *rgerrors.RGError
+		if !errors.As(err, &rgErr) || rgErr.Code != rgerrors.ErrContractOutOfGas {
+			t.Fatalf("expected %s, got %v", rgerrors.ErrContractOutOfGas, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("runtime call: %v", err)
+	}
 }
 
 func TestLoadStateValue(t *testing.T) {

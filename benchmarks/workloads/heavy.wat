@@ -1,6 +1,6 @@
 (module
   (import "frg" "state_get" (func $state_get (param i32 i32 i32 i32) (result i32)))
-  (import "frg" "state_set" (func $state_set (param i32 i32 i32 i32)))
+  (import "frg" "state_set" (func $state_set (param i32 i32 i32 i32) (result i32)))
   (import "frg" "log" (func $log (param i32 i32)))
   (memory (export "memory") 1)
   (func (export "init"))
@@ -28,6 +28,7 @@
     (loop $state_loop
       (i32.store (local.get $off) (local.get $i))
       (call $state_set (local.get $off) (i32.const 4) (local.get $off) (i32.const 4))
+      (drop)
       (call $state_get (local.get $off) (i32.const 4) (i32.const 256) (i32.const 64))
       (drop)
       (i32.add (local.get $off) (i32.const 4))

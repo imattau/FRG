@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -35,7 +36,9 @@ type RuntimeConfig struct {
 }
 
 func NewRuntime(cfg *RuntimeConfig) (*Runtime, error) {
-	engine := wasmtime.NewEngine()
+	wasmCfg := wasmtime.NewConfig()
+	wasmCfg.SetConsumeFuel(true)
+	engine := wasmtime.NewEngineWithConfig(wasmCfg)
 	store := wasmtime.NewStore(engine)
 
 	var fuelCap uint64 = maxFuel
@@ -49,7 +52,9 @@ func NewRuntime(cfg *RuntimeConfig) (*Runtime, error) {
 	if fuelCap == 0 {
 		fuelCap = maxFuel
 	}
-	store.SetFuel(fuelCap)
+	if err := store.SetFuel(fuelCap); err != nil {
+		return nil, fmt.Errorf("%w: configure fuel: %v", rgerrors.New(rgerrors.ErrContractOutOfGas, ""), err)
+	}
 
 	module, err := wasmtime.NewModule(store.Engine, cfg.WasmBytes)
 	if err != nil {
@@ -244,6 +249,12 @@ func (r *Runtime) Call(functionName string) ([]byte, error) {
 
 	_, err := run.Call(r.store)
 	if err != nil {
+		var trap *wasmtime.Trap
+		if errors.As(err, &trap) {
+			if code := trap.Code(); code != nil && *code == wasmtime.OutOfFuel {
+				return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractOutOfGas, ""), err)
+			}
+		}
 		return nil, fmt.Errorf("%w: %v", rgerrors.New(rgerrors.ErrContractTrap, ""), err)
 	}
 	if r.hostErr != nil {
