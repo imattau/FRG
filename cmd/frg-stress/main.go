@@ -40,6 +40,7 @@ func main() {
 	rate := flag.Int("rate", 100, "target tps")
 	duration := flag.Duration("duration", 60*time.Second, "run duration")
 	addr := flag.String("addr", "localhost:50051", "FRG node gRPC address")
+	connPoolSize := flag.Int("conns", 16, "number of pooled gRPC connections (each is a distinct rate-limiter peer on the node: SubmitTx caps each connection to 128 req/s, so aggregate throughput is roughly conns*128 until the chain itself becomes the bottleneck)")
 	flag.Parse()
 
 	data, err := os.ReadFile(*accountsPath)
@@ -83,20 +84,24 @@ func main() {
 		cancel()
 	}()
 
-	// A small pool of shared connections, not one dial per transaction
-	// (the original approach) and not a single shared connection either
-	// (tried in between): dialing fresh per submission meant this tool's
-	// own TCP/HTTP2 handshake churn -- hundreds of thousands of them over
-	// a real run -- competed for CPU/OS resources with the node under
-	// test, dwarfing the actual transaction traffic being measured. A
-	// single connection avoids that but hits HTTP/2's own per-connection
-	// concurrent-stream ceiling under 200 goroutines hammering it at
-	// once, throttling measured throughput to a hard, artificial ~128/s
-	// regardless of what the chain can actually sustain. A small pool
-	// gives each account real concurrency headroom without either
-	// problem.
-	const connPoolSize = 16
-	clients := make([]frgpb.FRGClient, connPoolSize)
+	// A pool of shared connections, not one dial per transaction (the
+	// original approach) and not a single shared connection either (tried
+	// in between): dialing fresh per submission meant this tool's own
+	// TCP/HTTP2 handshake churn -- hundreds of thousands of them over a
+	// real run -- competed for CPU/OS resources with the node under test,
+	// dwarfing the actual transaction traffic being measured. A single
+	// connection avoids that but hits HTTP/2's own per-connection
+	// concurrent-stream ceiling under many goroutines hammering it at
+	// once. A pool gives each account real concurrency headroom -- but
+	// the node's own submitLimiter (cmd/frg-node/grpc_server.go) also
+	// rate-limits per source connection (128 req/s), so the pool size
+	// itself becomes the throughput ceiling: aggregate measured
+	// throughput plateaus at roughly conns*128 regardless of --rate.
+	// Confirmed live: 16 conns plateaued at ~2045 tps no matter what
+	// --rate was requested; raising to 64 lifted the plateau to ~8125
+	// tps. Size --conns intentionally when trying to measure the
+	// chain's real ceiling rather than this tool's own.
+	clients := make([]frgpb.FRGClient, *connPoolSize)
 	for i := range clients {
 		conn, err := dialNode(*addr)
 		if err != nil {
@@ -145,13 +150,29 @@ func main() {
 					continue
 				}
 
-				nonce++
+				// candidateNonce, not nonce itself: nonce only advances on
+				// a confirmed-accepted submission (see below). FRG applies
+				// blocks atomically -- a single tx with an unexpected nonce
+				// fails the whole proposal and evicts every tx in it,
+				// including ones from unrelated accounts. Advancing nonce
+				// unconditionally here (the previous behavior) meant any
+				// transient rejection (e.g. the node's rate limiter)
+				// permanently desynced this account's nonce from the
+				// chain's real one: every later submission would then
+				// carry a nonce the chain would never accept, poisoning
+				// whatever block it landed in and evicting good
+				// transactions from other accounts along with it --
+				// observed live as a cascading wave of ERR_018 "expected
+				// nonce N, got M" block-apply failures with M climbing far
+				// past N. Retrying the same candidateNonce on failure is
+				// self-healing instead.
+				candidateNonce := nonce + 1
 				tr := &tx.Tx{
 					Type:           tx.TxTypeTransfer,
 					Sender:         fmt.Sprintf("stress-%d", idx),
 					Receiver:       fmt.Sprintf("stress-%d-rcvr", idx),
 					Value:          big.NewInt(1),
-					Nonce:          nonce,
+					Nonce:          candidateNonce,
 					SenderPubKey:   sender.PublicKey,
 					ReceiverPubKey: rcvrKP.PublicKey,
 				}
@@ -181,6 +202,7 @@ func main() {
 					st.failed.Add(1)
 					continue
 				}
+				nonce = candidateNonce
 
 				latency := time.Since(tstart)
 				st.latMu.Lock()
