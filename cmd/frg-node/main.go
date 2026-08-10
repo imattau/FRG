@@ -393,10 +393,34 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	normalizeConfig(&cfg)
+	if err := resolveConfigPaths(&cfg, path); err != nil {
+		return Config{}, err
+	}
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func resolveConfigPaths(cfg *Config, configPath string) error {
+	baseDir, err := filepath.Abs(filepath.Dir(configPath))
+	if err != nil {
+		return fmt.Errorf("resolve config directory: %w", err)
+	}
+	paths := []*string{
+		&cfg.Node.KeypairPath,
+		&cfg.Node.DBPath,
+		&cfg.Node.GenesisPath,
+		&cfg.GRPC.TLSCertFile,
+		&cfg.GRPC.TLSKeyFile,
+		&cfg.GRPC.TLSClientCAFile,
+	}
+	for _, path := range paths {
+		if strings.TrimSpace(*path) != "" && !filepath.IsAbs(*path) {
+			*path = filepath.Join(baseDir, *path)
+		}
+	}
+	return nil
 }
 
 func defaultConfig() Config {

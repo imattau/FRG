@@ -253,11 +253,13 @@ func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool, n
     working_dir: /data
     volumes:
       - ./%s:/data
+    environment:
+      FRG_DATA_DIR: /data
     ports:
       - "%d:%d"
       - "%d:%d"
     restart: unless-stopped
-	`, fmt.Sprintf("frg-node-%d", nd.index), imageOrBuild, nd.index, nodeDir,
+`, fmt.Sprintf("frg-node-%d", nd.index), imageOrBuild, nd.index, nodeDir,
 			nd.grpcPort, nd.grpcPort,
 			nd.p2pPort, nd.p2pPort)
 		buf = append(buf, svc...)
@@ -281,7 +283,7 @@ func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool, n
     restart: unless-stopped
     depends_on:
       - frg-node-0
-	`, faucetImageOrBuild))...)
+`, faucetImageOrBuild))...)
 	}
 
 	return os.WriteFile(filepath.Join(outputDir, "docker-compose.yml"), buf, 0644)

@@ -34,6 +34,45 @@ func TestLoadConfigUsesBuiltInDefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestLoadConfigResolvesRelativeNodePathsAgainstConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	config := []byte(`chain_id = "frg-relative-test"
+
+[node]
+keypair_path = "keys/frg.key"
+db_path = "state/frg.db"
+genesis_path = "network/genesis.json"
+
+[grpc]
+tls_cert_file = "tls/server.crt"
+tls_key_file = "tls/server.key"
+tls_client_ca_file = "tls/client-ca.crt"
+`)
+	if err := os.WriteFile(configPath, config, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]string{
+		cfg.Node.KeypairPath: filepath.Join(dir, "keys/frg.key"),
+		cfg.Node.DBPath:      filepath.Join(dir, "state/frg.db"),
+		cfg.Node.GenesisPath: filepath.Join(dir, "network/genesis.json"),
+		cfg.GRPC.TLSCertFile: filepath.Join(dir, "tls/server.crt"),
+		cfg.GRPC.TLSKeyFile:  filepath.Join(dir, "tls/server.key"),
+	}
+	for got, want := range checks {
+		if got != want {
+			t.Fatalf("resolved path = %q, want %q", got, want)
+		}
+	}
+	if cfg.GRPC.TLSClientCAFile != filepath.Join(dir, "tls/client-ca.crt") {
+		t.Fatalf("resolved client CA = %q", cfg.GRPC.TLSClientCAFile)
+	}
+}
+
 func TestValidateConfigRejectsUnsafeProductionSettings(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.ChainID = "bad chain"
