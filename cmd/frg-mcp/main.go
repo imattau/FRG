@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
 	"github.com/imattau/frg/wallet"
@@ -102,18 +104,11 @@ func main() {
 
 	log.SetOutput(os.Stderr)
 
-	kp, err := wallet.LoadKeypair(*keyPath)
+	kp, created, err := loadMCPKeypair(*keyPath, *createKey)
 	if err != nil {
-		if !*createKey || !os.IsNotExist(err) {
-			log.Fatalf("load key: %v", err)
-		}
-		kp, err = wallet.GenerateKeypair()
-		if err != nil {
-			log.Fatalf("generate key: %v", err)
-		}
-		if err := wallet.SaveSeed(*keyPath, kp); err != nil {
-			log.Fatalf("save key: %v", err)
-		}
+		log.Fatalf("load key: %v", err)
+	}
+	if created {
 		log.Printf("created MCP wallet key at %s", *keyPath)
 	}
 
@@ -134,6 +129,24 @@ func main() {
 	if err := s.serve(os.Stdin, os.Stdout); err != nil && err != io.EOF {
 		log.Fatalf("serve MCP: %v", err)
 	}
+}
+
+func loadMCPKeypair(path string, createMissing bool) (*keys.Keypair, bool, error) {
+	kp, err := wallet.LoadKeypair(path)
+	if err == nil {
+		return kp, false, nil
+	}
+	if !createMissing || !errors.Is(err, os.ErrNotExist) {
+		return nil, false, err
+	}
+	kp, err = wallet.GenerateKeypair()
+	if err != nil {
+		return nil, false, fmt.Errorf("generate key: %w", err)
+	}
+	if err := wallet.SaveSeed(path, kp); err != nil {
+		return nil, false, fmt.Errorf("save key: %w", err)
+	}
+	return kp, true, nil
 }
 
 func loadPolicy(path string, autonomous bool) (*policy, error) {

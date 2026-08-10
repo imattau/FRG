@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,40 @@ func TestPolicyDeniesSubmitByDefault(t *testing.T) {
 	err = p.allowSpend("transfer", strings.Repeat("0", 64), big.NewInt(1), false, false)
 	if err == nil || !strings.Contains(err.Error(), "allow_submit is false") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadMCPKeypairCreatesMissingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.key")
+	kp, created, err := loadMCPKeypair(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("expected key to be created")
+	}
+	if kp == nil {
+		t.Fatal("nil keypair")
+	}
+	loaded, created, err := loadMCPKeypair(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Fatal("existing key should not be recreated")
+	}
+	if loaded.PublicKey != kp.PublicKey {
+		t.Fatalf("loaded pubkey %x != created %x", loaded.PublicKey, kp.PublicKey)
+	}
+}
+
+func TestLoadMCPKeypairMissingWithoutCreateFails(t *testing.T) {
+	_, created, err := loadMCPKeypair(filepath.Join(t.TempDir(), "agent.key"), false)
+	if err == nil {
+		t.Fatal("expected missing key error")
+	}
+	if created {
+		t.Fatal("created should be false on error")
 	}
 }
 
