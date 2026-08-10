@@ -213,10 +213,10 @@ func (e *Engine) Start(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				e.startNextRound(rs, validators, stakes, proposeTimer)
+				e.startNextRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 			} else {
 				e.rejectProposal(rs)
-				if err := e.restartRound(rs, validators, stakes, proposeTimer); err != nil {
+				if err := e.restartRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer); err != nil {
 					return err
 				}
 			}
@@ -228,7 +228,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		time.AfterFunc(e.timeouts.ProposeDelay, func() {
 			if rsCopy.Phase == PhasePropose {
 				_ = pkCopy
-				e.broadcastProposal(rsCopy, rootCopy)
+				e.broadcastProposal(rsCopy, rootCopy, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 			}
 		})
 	}
@@ -258,13 +258,13 @@ func (e *Engine) Start(ctx context.Context) error {
 			if p == nil {
 				continue
 			}
-			e.handleProposal(rs, p, validators, stakes, proposeTimer, prevoteTimer)
+			e.handleProposal(rs, p, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 
 		case <-proposeTimer.C:
-			e.onProposeTimeout(rs, validators, prevoteTimer)
+			e.onProposeTimeout(rs, validators, stakes, prevoteTimer, precommitTimer, proposeTimer)
 
 		case <-prevoteTimer.C:
-			e.onPrevoteTimeout(rs, validators, stakes, precommitTimer)
+			e.onPrevoteTimeout(rs, validators, stakes, precommitTimer, proposeTimer, prevoteTimer)
 
 		case <-precommitTimer.C:
 			rs.IncrementRound()
@@ -273,7 +273,7 @@ func (e *Engine) Start(ctx context.Context) error {
 			proposerPK, _ = leader.SkipProposer(prevRoot, rs.Height, validators, rs.Round)
 			proposeTimer.Reset(e.timeouts.Propose)
 			if proposerPK == e.kp.PublicKey {
-				e.broadcastProposal(rs, prevRoot)
+				e.broadcastProposal(rs, prevRoot, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 			}
 			persistRoundState(e.sm, rs)
 		}
@@ -296,7 +296,7 @@ func (e *Engine) prevStateRoot() [32]byte {
 	return root
 }
 
-func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
+func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte, validators [][32]byte, stakes []*big.Int, proposeTimer, prevoteTimer, precommitTimer *time.Timer) {
 	if e.proposer == nil {
 		return
 	}
@@ -324,7 +324,9 @@ func (e *Engine) broadcastProposal(rs *RoundState, prevRoot [32]byte) {
 		return
 	}
 	_ = e.p2p.BroadcastBlockHeader(data)
-	e.broadcastPrevote(rs, p.BlockHashForChain(e.chainID))
+	if vote := e.broadcastPrevote(rs, p.BlockHashForChain(e.chainID)); vote != nil {
+		e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+	}
 }
 
 func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stakes []*big.Int,
@@ -358,15 +360,19 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 			rs.Phase = PhasePrecommit
 			e.setStatus(rs)
 			prevoteTimer.Stop()
+			precommitTimer.Reset(e.timeouts.Precommit)
 			// Determine if quorum is on a specific block or nil
 			blockHash, hasQuorum := e.quorumBlock(rs.Prevotes, validators, stakes)
 			if hasQuorum {
 				rs.Lock(blockHash, rs.Round)
-				e.broadcastPrecommit(rs, blockHash)
+				if vote := e.broadcastPrecommit(rs, blockHash); vote != nil {
+					e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+				}
 			} else {
-				e.broadcastPrecommit(rs, [32]byte{})
+				if vote := e.broadcastPrecommit(rs, [32]byte{}); vote != nil {
+					e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+				}
 			}
-			precommitTimer.Reset(e.timeouts.Precommit)
 		}
 
 	case VotePrecommit:
@@ -388,11 +394,11 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 					if refreshErr != nil {
 						return
 					}
-					e.startNextRound(rs, validators, stakes, proposeTimer)
+					e.startNextRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 				}
 			} else {
 				e.rejectProposal(rs)
-				if err := e.restartRound(rs, validators, stakes, proposeTimer); err != nil {
+				if err := e.restartRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer); err != nil {
 					return
 				}
 			}
@@ -401,7 +407,7 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 }
 
 func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][32]byte, stakes []*big.Int,
-	proposeTimer, prevoteTimer *time.Timer) {
+	proposeTimer, prevoteTimer, precommitTimer *time.Timer) {
 
 	if p.Height != rs.Height || p.Round != rs.Round {
 		return
@@ -432,42 +438,50 @@ func (e *Engine) handleProposal(rs *RoundState, p *BlockProposal, validators [][
 	proposeTimer.Stop()
 
 	blockHash := p.BlockHashForChain(e.chainID)
+	prevoteTimer.Reset(e.timeouts.Prevote)
 
 	// Lock rule: if locked on a different block, prevote nil unless we see 2/3+ for new block.
 	if rs.LockedBlock != nil && *rs.LockedBlock != blockHash {
-		e.broadcastPrevote(rs, [32]byte{})
+		if vote := e.broadcastPrevote(rs, [32]byte{}); vote != nil {
+			e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+		}
 	} else {
-		e.broadcastPrevote(rs, blockHash)
+		if vote := e.broadcastPrevote(rs, blockHash); vote != nil {
+			e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+		}
 	}
-	prevoteTimer.Reset(e.timeouts.Prevote)
 	persistRoundState(e.sm, rs)
 }
 
-func (e *Engine) onProposeTimeout(rs *RoundState, validators [][32]byte, prevoteTimer *time.Timer) {
+func (e *Engine) onProposeTimeout(rs *RoundState, validators [][32]byte, stakes []*big.Int, prevoteTimer, precommitTimer, proposeTimer *time.Timer) {
 	if rs.Phase != PhasePropose {
 		return
 	}
 	rs.Phase = PhasePrevote
 	e.setStatus(rs)
-	e.broadcastPrevote(rs, [32]byte{}) // nil prevote
 	prevoteTimer.Reset(e.timeouts.Prevote)
+	if vote := e.broadcastPrevote(rs, [32]byte{}); vote != nil {
+		e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+	}
 	persistRoundState(e.sm, rs)
 }
 
-func (e *Engine) onPrevoteTimeout(rs *RoundState, validators [][32]byte, stakes []*big.Int, precommitTimer *time.Timer) {
+func (e *Engine) onPrevoteTimeout(rs *RoundState, validators [][32]byte, stakes []*big.Int, precommitTimer, proposeTimer, prevoteTimer *time.Timer) {
 	if rs.Phase != PhasePrevote {
 		return
 	}
 	rs.Phase = PhasePrecommit
 	e.setStatus(rs)
-	e.broadcastPrecommit(rs, [32]byte{}) // nil precommit
 	precommitTimer.Reset(e.timeouts.Precommit)
+	if vote := e.broadcastPrecommit(rs, [32]byte{}); vote != nil {
+		e.handleVote(rs, vote, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
+	}
 	persistRoundState(e.sm, rs)
 }
 
-func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) {
+func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) *Vote {
 	if !e.sm.RecordConsensusVote(rs.Height, rs.Round, uint8(VotePrevote), blockHash) {
-		return
+		return nil
 	}
 	v := &Vote{
 		Type: VotePrevote, Height: rs.Height, Round: rs.Round,
@@ -476,22 +490,20 @@ func (e *Engine) broadcastPrevote(rs *RoundState, blockHash [32]byte) {
 	body := VoteSignBytesForChain(v, e.chainID)
 	sig, err := e.kp.Sign(body)
 	if err != nil {
-		return
+		return nil
 	}
 	v.Sig = sig
-	// Gossip subscriptions do not provide a reliable local loopback. Count
-	// this engine's vote locally as well as publishing it to peers.
-	rs.Prevotes[e.kp.PublicKey] = *v
 	data, err := v.Serialize()
 	if err != nil {
-		return
+		return nil
 	}
 	_ = e.p2p.BroadcastVote(data)
+	return v
 }
 
-func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
+func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) *Vote {
 	if !e.sm.RecordConsensusVote(rs.Height, rs.Round, uint8(VotePrecommit), blockHash) {
-		return
+		return nil
 	}
 	v := &Vote{
 		Type: VotePrecommit, Height: rs.Height, Round: rs.Round,
@@ -500,15 +512,15 @@ func (e *Engine) broadcastPrecommit(rs *RoundState, blockHash [32]byte) {
 	body := VoteSignBytesForChain(v, e.chainID)
 	sig, err := e.kp.Sign(body)
 	if err != nil {
-		return
+		return nil
 	}
 	v.Sig = sig
-	rs.Precommits[e.kp.PublicKey] = *v
 	data, err := v.Serialize()
 	if err != nil {
-		return
+		return nil
 	}
 	_ = e.p2p.BroadcastVote(data)
+	return v
 }
 
 func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
@@ -545,13 +557,13 @@ func (e *Engine) rejectProposal(rs *RoundState) {
 	}
 }
 
-func (e *Engine) restartRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer *time.Timer) error {
+func (e *Engine) restartRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer, prevoteTimer, precommitTimer *time.Timer) error {
 	var err error
 	validators, stakes, err = e.staking.BondedAmounts()
 	if err != nil {
 		return err
 	}
-	e.startNextRound(rs, validators, stakes, proposeTimer)
+	e.startNextRound(rs, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 	return nil
 }
 
@@ -572,7 +584,7 @@ func attestationFromPrecommits(votes map[[32]byte]Vote, blockHash [32]byte) Atte
 	return attestation
 }
 
-func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer *time.Timer) {
+func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer, prevoteTimer, precommitTimer *time.Timer) {
 	rs.Height++
 	rs.Round = 0
 	rs.Phase = PhasePropose
@@ -590,7 +602,7 @@ func (e *Engine) startNextRound(rs *RoundState, validators [][32]byte, stakes []
 		rootCopy := prevRoot
 		time.AfterFunc(e.timeouts.ProposeDelay, func() {
 			if rsCopy.Phase == PhasePropose {
-				e.broadcastProposal(rsCopy, rootCopy)
+				e.broadcastProposal(rsCopy, rootCopy, validators, stakes, proposeTimer, prevoteTimer, precommitTimer)
 			}
 		})
 	}
