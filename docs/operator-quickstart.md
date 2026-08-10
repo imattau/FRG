@@ -82,6 +82,20 @@ Confirm activation:
 ./frg-cli validators --addr 127.0.0.1:50051
 ```
 
+The same bond can be submitted through the local wallet API:
+
+```sh
+go build -o frg-wallet ./cmd/frg-wallet
+./frg-wallet \
+  --key frg-data/frg.key \
+  --node 127.0.0.1:50051 \
+  --listen 127.0.0.1:8090
+
+curl -X POST http://127.0.0.1:8090/bond \
+  -H 'content-type: application/json' \
+  -d '{"amount":"1000"}'
+```
+
 ## Get Tokens
 
 Users and new validators get FRG from genesis allocations, a funded treasury account, a faucet, or another holder. Transfers are sender-signed, so funded accounts can send directly to any user or validator pubkey:
@@ -100,6 +114,8 @@ curl -X POST http://127.0.0.1:8088/faucet \
   -H 'content-type: application/json' \
   -d '{"pubkey":"USER_OR_VALIDATOR_PUBKEY"}'
 ```
+
+Developers can use `frg-wallet` as a local wallet API for the same flow. See [wallet-api.md](wallet-api.md).
 
 ## Manual Start
 

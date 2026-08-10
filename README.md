@@ -16,7 +16,7 @@ FRG processes up to **65,536 transactions per block**, organising them into a K=
 | Max transactions/block (T_MAX) | 65,536 |
 | Fixed-point denominator (SCALE) | 10^18 |
 | Hash function | SHA2-256-SINGLE |
-| Signing scheme | Ed25519 (2-of-2 for transfers) |
+| Signing scheme | Ed25519 sender signatures |
 | Max tx payload | 70,000 bytes |
 
 ---
@@ -28,7 +28,7 @@ core/
   errors/    — protocol error codes (ERR_001–ERR_020)
   hash/      — SHA2-256, domain prefixes, UINT256_MAX
   keys/      — Ed25519 keypair generation, signing, verification
-  tx/        — transaction serialisation, 2-of-2 signing, nonce, miss evidence
+  tx/        — transaction serialisation, sender signing, nonce, miss evidence
   node/      — RGNode serialisation, coarse-graining, signature derivation
   tree/      — K-ary state tree construction, empty block anchor
   ledger/    — balance store (bbolt), Transfer (nonce-enforced), Burn, Seed, Move
@@ -45,7 +45,7 @@ client/      — offline tx queue, gRPC transport
 
 ## Transaction Types
 
-**TRANSFER** (`Type=1`) — value transfer between accounts. Requires 2-of-2 Ed25519 signatures (sender + receiver). Strictly sequential nonce enforcement.
+**TRANSFER** (`Type=1`) — value transfer between accounts. Requires a sender Ed25519 signature. Strictly sequential nonce enforcement.
 
 **MISS_EVIDENCE** (`Type=2`) — records a validator liveness miss on-chain. Submitted by the next validator in the skip rotation. Single signature (reporter only). Committed to state root — independently verifiable by any node.
 
@@ -143,6 +143,17 @@ That skips P2P/blockloop startup and brings up the admin API immediately on `127
 
 By default it opens on `http://127.0.0.1:8080` and points at `127.0.0.1:50051`.
 Use the page to submit raw hex-encoded transactions, submit batches, stream block headers, and poll live node status from any FRG gRPC server.
+
+### Wallet SDK and Local API
+
+Build `frg-wallet` for a local developer wallet API:
+
+```bash
+go build -o frg-wallet ./cmd/frg-wallet
+./frg-wallet --create-key --node 127.0.0.1:50051 --listen 127.0.0.1:8090
+```
+
+It exposes local HTTP endpoints for pubkey, account/balance, transfers, bonding, faucet requests, node status, and validators. The reusable Go package is available at `github.com/imattau/frg/wallet`. See [docs/wallet-api.md](docs/wallet-api.md).
 
 ### Validator Docker Quickstart
 
