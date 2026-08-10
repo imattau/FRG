@@ -5,7 +5,12 @@ package frg;
 option go_package = "github.com/imattau/frg/proto";
 
 service FRG {
+  // SubmitTx accepts FRG's Go-side serialized, signed transaction bytes.
+  // The transaction wire format and signing preimage are intentionally not
+  // defined in this proto; clients that need to construct signed transactions
+  // must use FRG wallet/Go-side transaction code until that format is specified.
   rpc SubmitTx(RawBytes) returns (SubmitResponse);
+  // SubmitBatch accepts a batch of the same opaque signed transaction bytes.
   rpc SubmitBatch(RawBytesArray) returns (SubmitResponse);
   rpc SubscribeBlocks(Empty) returns (stream RawBytes);
   rpc GetStatus(Empty) returns (StatusResponse);
@@ -13,6 +18,7 @@ service FRG {
   rpc GetContractState(ContractStateRequest) returns (ContractStateResponse);
   rpc ListValidators(Empty) returns (ValidatorList);
   rpc ListMempool(Empty) returns (MempoolList);
+  rpc GetBlockTelemetry(BlockTelemetryRequest) returns (BlockTelemetryResponse);
 }
 
 message RawBytes {
@@ -82,4 +88,49 @@ message MempoolEntry {
 
 message MempoolList {
   repeated MempoolEntry entries = 1;
+}
+
+message BlockTelemetryRequest {
+  // Height zero means the latest committed block.
+  uint64 height = 1;
+}
+
+message TxTypeCount {
+  uint32 type = 1;
+  string name = 2;
+  uint64 count = 3;
+}
+
+message SignatureCount {
+  uint32 signature = 1;
+  string name = 2;
+  uint64 count = 3;
+}
+
+message RGLevelTelemetry {
+  uint32 level = 1;
+  uint32 scale = 2;
+  uint64 node_count = 3;
+  repeated SignatureCount signature_counts = 4;
+  double contract_density = 5;
+  repeated uint64 volatile_regions = 6;
+  repeated uint64 stagnant_regions = 7;
+  string total_volume = 8;
+  string variance = 9;
+  uint64 contract_tx_count = 10;
+  uint64 contract_node_count = 11;
+}
+
+message BlockTelemetryResponse {
+  uint64 height = 1;
+  bytes state_root = 2;
+  bytes proposer_pubkey = 3;
+  uint64 tx_count = 4;
+  string total_value = 5;
+  string mean_value = 6;
+  string variance = 7;
+  repeated TxTypeCount tx_types = 8;
+  repeated RGLevelTelemetry levels = 9;
+  bool contract_state_included = 10;
+  string warning = 11;
 }

@@ -160,7 +160,7 @@ On first launch the node now bootstraps local defaults in the current directory:
 - `frg.db` for the local BoltDB state
 - gRPC admin API on `127.0.0.1:50051`
 
-Use the gRPC API from the `client` package or any gRPC client that speaks the `frg.FRG` service in `proto/frg.proto`.
+Use the gRPC API from the `client` package or another client that implements the `frg.FRG` service in `proto/frg.proto`. Read-only methods are declared in the proto, including status, account, contract state, validator list, mempool, and block telemetry. Transaction submission takes opaque FRG signed transaction bytes; signed transaction construction is handled by the Go wallet/transaction code and is not specified in the proto.
 
 If you want a minimal local setup for the web client or direct gRPC submits, start the node in gRPC-only mode:
 
