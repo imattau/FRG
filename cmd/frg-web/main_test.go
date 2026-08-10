@@ -233,7 +233,6 @@ func startWebTestGRPC(t *testing.T) (*grpc.Server, func(context.Context, string)
 				return lis.Dial()
 			}),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.CallContentSubtype("frg-json")),
 		)
 	}
 

@@ -1,8 +1,8 @@
 """
 Node interaction via frg-cli subprocess.
 
-All gRPC queries go through the frg-cli binary, which handles the
-frg-json codec correctly. Parse the text output for structured data.
+The CLI uses the standard protobuf encoding defined by proto/frg.proto.
+Parse its text output for structured data.
 """
 
 from __future__ import annotations

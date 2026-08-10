@@ -26,12 +26,12 @@ type stressAccount struct {
 }
 
 type stats struct {
-	submitted  atomic.Int64
-	confirmed  atomic.Int64
-	failed     atomic.Int64
-	startTime  time.Time
-	latencies  []time.Duration
-	latMu      sync.Mutex
+	submitted atomic.Int64
+	confirmed atomic.Int64
+	failed    atomic.Int64
+	startTime time.Time
+	latencies []time.Duration
+	latMu     sync.Mutex
 }
 
 func main() {
@@ -212,7 +212,7 @@ func dialNode(addr string) (*grpc.ClientConn, error) {
 }
 
 func callOpt() []grpc.CallOption {
-	return []grpc.CallOption{grpc.CallContentSubtype("frg-json")}
+	return nil
 }
 
 func progressReporter(st *stats) {

@@ -63,7 +63,6 @@ func Dial(ctx context.Context, addr string, kp *keys.Keypair, chainID string, op
 	dialOpts := make([]grpc.DialOption, 0, len(opts)+3)
 	dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	dialOpts = append(dialOpts, opts...)
-	dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.CallContentSubtype("frg-json")))
 	conn, err := grpc.DialContext(ctx, addr, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
@@ -134,7 +133,7 @@ func (w *Wallet) ChainID() string {
 }
 
 func (w *Wallet) Account(ctx context.Context, pubkey [32]byte) (*frgpb.AccountResponse, error) {
-	return w.client.GetAccount(ctx, &frgpb.AccountRequest{Pubkey: pubkey[:]}, grpc.CallContentSubtype("frg-json"))
+	return w.client.GetAccount(ctx, &frgpb.AccountRequest{Pubkey: pubkey[:]})
 }
 
 func (w *Wallet) OwnAccount(ctx context.Context) (*frgpb.AccountResponse, error) {
@@ -142,26 +141,26 @@ func (w *Wallet) OwnAccount(ctx context.Context) (*frgpb.AccountResponse, error)
 }
 
 func (w *Wallet) Status(ctx context.Context) (*frgpb.StatusResponse, error) {
-	return w.client.GetStatus(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	return w.client.GetStatus(ctx, &frgpb.Empty{})
 }
 
 func (w *Wallet) Validators(ctx context.Context) (*frgpb.ValidatorList, error) {
-	return w.client.ListValidators(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	return w.client.ListValidators(ctx, &frgpb.Empty{})
 }
 
 func (w *Wallet) Mempool(ctx context.Context) (*frgpb.MempoolList, error) {
-	return w.client.ListMempool(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	return w.client.ListMempool(ctx, &frgpb.Empty{})
 }
 
 func (w *Wallet) BlockTelemetry(ctx context.Context, height uint64) (*frgpb.BlockTelemetryResponse, error) {
-	return w.client.GetBlockTelemetry(ctx, &frgpb.BlockTelemetryRequest{Height: height}, grpc.CallContentSubtype("frg-json"))
+	return w.client.GetBlockTelemetry(ctx, &frgpb.BlockTelemetryRequest{Height: height})
 }
 
 func (w *Wallet) ContractState(ctx context.Context, contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error) {
 	return w.client.GetContractState(ctx, &frgpb.ContractStateRequest{
 		ContractAddress: contractAddr[:],
 		Key:             append([]byte(nil), key...),
-	}, grpc.CallContentSubtype("frg-json"))
+	})
 }
 
 func (w *Wallet) Transfer(ctx context.Context, to [32]byte, amount *big.Int) (*TransferResult, error) {
@@ -347,7 +346,7 @@ func (w *Wallet) signAndSubmit(ctx context.Context, tr *tx.Tx) (*TransferResult,
 	if err != nil {
 		return nil, err
 	}
-	resp, err := w.client.SubmitTx(ctx, &frgpb.RawBytes{Data: raw}, grpc.CallContentSubtype("frg-json"))
+	resp, err := w.client.SubmitTx(ctx, &frgpb.RawBytes{Data: raw})
 	if err != nil {
 		return nil, err
 	}

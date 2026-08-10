@@ -244,7 +244,7 @@ func dialNode(addr string) (*grpc.ClientConn, error) {
 }
 
 func callOpt() []grpc.CallOption {
-	return []grpc.CallOption{grpc.CallContentSubtype("frg-json")}
+	return nil
 }
 
 func int64ToBytes(v int64) []byte {

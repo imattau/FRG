@@ -720,7 +720,7 @@ func dialNode(addr string) (*grpc.ClientConn, error) {
 }
 
 func callOpt() []grpc.CallOption {
-	return []grpc.CallOption{grpc.CallContentSubtype("frg-json")}
+	return nil
 }
 
 func kpToSeed(kp *keys.Keypair) [32]byte {

@@ -167,7 +167,7 @@ func TestNodeGRPCSubmitTx(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := client.SubmitTx(context.Background(), &frgpb.RawBytes{Data: raw}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.SubmitTx(context.Background(), &frgpb.RawBytes{Data: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestNodeGRPCSubmitBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := client.SubmitBatch(context.Background(), &frgpb.RawBytesArray{Data: [][]byte{tx1, tx2}}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.SubmitBatch(context.Background(), &frgpb.RawBytesArray{Data: [][]byte{tx1, tx2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestNodeGRPCSubscribeBlocks(t *testing.T) {
 	defer cleanup()
 
 	client := frgpb.NewFRGClient(conn)
-	stream, err := client.SubscribeBlocks(context.Background(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	stream, err := client.SubscribeBlocks(context.Background(), &frgpb.Empty{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestNodeGRPCGetStatus(t *testing.T) {
 	defer cleanup()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.GetStatus(context.Background(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.GetStatus(context.Background(), &frgpb.Empty{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestNodeGRPCGetContractState(t *testing.T) {
 	resp, err := client.GetContractState(context.Background(), &frgpb.ContractStateRequest{
 		ContractAddress: addr[:],
 		Key:             []byte("count"),
-	}, grpc.CallContentSubtype("frg-json"))
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestNodeGRPCGetBlockTelemetry(t *testing.T) {
 	defer cleanup()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.GetBlockTelemetry(context.Background(), &frgpb.BlockTelemetryRequest{Height: 9}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.GetBlockTelemetry(context.Background(), &frgpb.BlockTelemetryRequest{Height: 9})
 	if err != nil {
 		t.Fatal(err)
 	}

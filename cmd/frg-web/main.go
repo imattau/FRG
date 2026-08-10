@@ -608,7 +608,7 @@ func (s *server) handleBlocks(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	stream, err := client.SubscribeBlocks(r.Context(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	stream, err := client.SubscribeBlocks(r.Context(), &frgpb.Empty{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -688,7 +688,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.GetStatus(r.Context(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.GetStatus(r.Context(), &frgpb.Empty{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -724,7 +724,7 @@ func (s *server) handleValidators(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.ListValidators(r.Context(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.ListValidators(r.Context(), &frgpb.Empty{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -769,7 +769,7 @@ func (s *server) handleMempool(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.ListMempool(r.Context(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.ListMempool(r.Context(), &frgpb.Empty{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -820,7 +820,7 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.GetAccount(r.Context(), &frgpb.AccountRequest{Pubkey: pubkeyBytes}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.GetAccount(r.Context(), &frgpb.AccountRequest{Pubkey: pubkeyBytes})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -854,7 +854,7 @@ func (s *server) captureBlocks() {
 			continue
 		}
 		client := frgpb.NewFRGClient(conn)
-		resp, err := client.GetStatus(context.Background(), &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+		resp, err := client.GetStatus(context.Background(), &frgpb.Empty{})
 		conn.Close()
 		if err != nil {
 			continue
@@ -910,7 +910,7 @@ func submitTx(ctx context.Context, dial func(context.Context, string) (*grpc.Cli
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.SubmitTx(ctx, &frgpb.RawBytes{Data: raw}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.SubmitTx(ctx, &frgpb.RawBytes{Data: raw})
 	if err != nil {
 		return nil, err
 	}
@@ -925,7 +925,7 @@ func submitBatch(ctx context.Context, dial func(context.Context, string) (*grpc.
 	defer conn.Close()
 
 	client := frgpb.NewFRGClient(conn)
-	resp, err := client.SubmitBatch(ctx, &frgpb.RawBytesArray{Data: raw}, grpc.CallContentSubtype("frg-json"))
+	resp, err := client.SubmitBatch(ctx, &frgpb.RawBytesArray{Data: raw})
 	if err != nil {
 		return nil, err
 	}
@@ -943,7 +943,6 @@ func dialGRPC(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 		ctx,
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("frg-json")),
 	)
 }
 

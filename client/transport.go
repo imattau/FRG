@@ -23,7 +23,6 @@ func dialTransport(addr string, opts ...grpc.DialOption) (*transport, error) {
 	dialOpts := make([]grpc.DialOption, 0, len(opts)+2)
 	dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	dialOpts = append(dialOpts, opts...)
-	dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.CallContentSubtype("frg-json")))
 
 	conn, err := grpc.DialContext(context.Background(), addr, dialOpts...)
 	if err != nil {
@@ -33,7 +32,7 @@ func dialTransport(addr string, opts ...grpc.DialOption) (*transport, error) {
 }
 
 func (t *transport) submitTx(ctx context.Context, txBytes []byte) error {
-	resp, err := t.client.SubmitTx(ctx, &frgpb.RawBytes{Data: txBytes}, grpc.CallContentSubtype("frg-json"))
+	resp, err := t.client.SubmitTx(ctx, &frgpb.RawBytes{Data: txBytes})
 	if err != nil {
 		return err
 	}
@@ -44,7 +43,7 @@ func (t *transport) submitTx(ctx context.Context, txBytes []byte) error {
 }
 
 func (t *transport) submitBatch(ctx context.Context, txBytesSlice [][]byte) error {
-	resp, err := t.client.SubmitBatch(ctx, &frgpb.RawBytesArray{Data: txBytesSlice}, grpc.CallContentSubtype("frg-json"))
+	resp, err := t.client.SubmitBatch(ctx, &frgpb.RawBytesArray{Data: txBytesSlice})
 	if err != nil {
 		return err
 	}
@@ -55,7 +54,7 @@ func (t *transport) submitBatch(ctx context.Context, txBytesSlice [][]byte) erro
 }
 
 func (t *transport) subscribe(ctx context.Context) (<-chan []byte, error) {
-	stream, err := t.client.SubscribeBlocks(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
+	stream, err := t.client.SubscribeBlocks(ctx, &frgpb.Empty{})
 	if err != nil {
 		return nil, err
 	}
