@@ -123,6 +123,23 @@ Claim validator rewards:
 curl -X POST http://127.0.0.1:8090/claim-rewards
 ```
 
+Submit missed-deadline evidence when this wallet's validator key is the
+scheduled reporter for a missed proposer:
+
+```sh
+curl -X POST http://127.0.0.1:8090/submit-missed-deadline-report \
+  -H 'content-type: application/json' \
+  -d '{
+    "missed_height": 42,
+    "missed_proposer": "MISSED_PROPOSER_PUBKEY_HEX",
+    "skip_index": 0
+  }'
+```
+
+The concise `/miss-evidence` route is also available. The wallet supplies the
+reporter pubkey, zero value, nonce, and signature; the node validates the
+rotation and block height.
+
 ### Contracts
 
 Predict the address for the wallet's next contract deployment:

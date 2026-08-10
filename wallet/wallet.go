@@ -255,6 +255,28 @@ func (w *Wallet) ClaimRewards(ctx context.Context) (*TransferResult, error) {
 	return w.signAndSubmit(ctx, tr)
 }
 
+// SubmitMissedDeadlineReport submits MISS_EVIDENCE for a missed proposer.
+// The wallet key must be the validator scheduled to report the miss.
+func (w *Wallet) SubmitMissedDeadlineReport(ctx context.Context, missedHeight uint64, missedProposer [32]byte, skipIndex uint32) (*TransferResult, error) {
+	acct, err := w.OwnAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tr := &tx.Tx{
+		Type:           tx.TxTypeMissEvidence,
+		Sender:         "miss-evidence",
+		Receiver:       "missed-proposer",
+		Value:          big.NewInt(0),
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   w.kp.PublicKey,
+		ReceiverPubKey: missedProposer,
+		MissedHeight:   missedHeight,
+		MissedProposer: missedProposer,
+		SkipIndex:      skipIndex,
+	}
+	return w.signAndSubmit(ctx, tr)
+}
+
 func (w *Wallet) DeployContract(ctx context.Context, wasm []byte, value *big.Int) (*DeployResult, error) {
 	if len(wasm) == 0 {
 		return nil, fmt.Errorf("wasm is required")

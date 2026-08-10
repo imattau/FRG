@@ -241,6 +241,40 @@ func TestValidatorLifecycleTransactions(t *testing.T) {
 	}
 }
 
+func TestSubmitMissedDeadlineReport(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	missed, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeClient{account: &frgpb.AccountResponse{Balance: "1000", Nonce: 9}}
+	w, err := New(kp, fc, "report-chain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.SubmitMissedDeadlineReport(context.Background(), 42, missed.PublicKey, 3); err != nil {
+		t.Fatal(err)
+	}
+	if fc.tx == nil || fc.tx.Type != tx.TxTypeMissEvidence {
+		t.Fatalf("type = %v, want MISS_EVIDENCE", fc.tx)
+	}
+	if fc.tx.Nonce != 10 || fc.tx.Value.Sign() != 0 {
+		t.Fatalf("nonce/value = %d/%s", fc.tx.Nonce, fc.tx.Value)
+	}
+	if fc.tx.SenderPubKey != kp.PublicKey || fc.tx.ReceiverPubKey != missed.PublicKey {
+		t.Fatal("reporter or missed proposer key mismatch")
+	}
+	if fc.tx.MissedHeight != 42 || fc.tx.MissedProposer != missed.PublicKey || fc.tx.SkipIndex != 3 {
+		t.Fatalf("evidence fields not preserved")
+	}
+	if err := fc.tx.VerifySigsForChain("report-chain"); err != nil {
+		t.Fatalf("signature did not verify: %v", err)
+	}
+}
+
 func TestDeployContractReturnsDeterministicAddress(t *testing.T) {
 	kp, err := keys.GenerateKeypair()
 	if err != nil {

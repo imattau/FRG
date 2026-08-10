@@ -57,6 +57,12 @@ type bondRequest struct {
 	AmountQuanta string `json:"amount_quanta"`
 }
 
+type missedDeadlineReportRequest struct {
+	MissedHeight   uint64 `json:"missed_height"`
+	MissedProposer string `json:"missed_proposer"`
+	SkipIndex      uint32 `json:"skip_index"`
+}
+
 type contractDeployRequest struct {
 	WasmHex     string `json:"wasm_hex"`
 	Value       string `json:"value"`
@@ -137,6 +143,8 @@ func main() {
 	mux.HandleFunc("/unbond", s.handleUnbond)
 	mux.HandleFunc("/finalize-unbond", s.handleFinalizeUnbond)
 	mux.HandleFunc("/claim-rewards", s.handleClaimRewards)
+	mux.HandleFunc("/miss-evidence", s.handleMissedDeadlineReport)
+	mux.HandleFunc("/submit-missed-deadline-report", s.handleMissedDeadlineReport)
 	mux.HandleFunc("/contracts/address", s.handleContractAddress)
 	mux.HandleFunc("/contracts/state", s.handleContractState)
 	mux.HandleFunc("/contracts/deploy", s.handleContractDeploy)
@@ -301,6 +309,32 @@ func (s *server) handleClaimRewards(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := s.w.ClaimRewards(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *server) handleMissedDeadlineReport(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req missedDeadlineReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+	if req.MissedHeight == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missed_height must be positive"))
+		return
+	}
+	missedProposer, err := wallet.DecodePubKey(req.MissedProposer)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missed_proposer: %w", err))
+		return
+	}
+	resp, err := s.w.SubmitMissedDeadlineReport(r.Context(), req.MissedHeight, missedProposer, req.SkipIndex)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
