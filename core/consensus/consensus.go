@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"log"
 	"math/big"
 	"sort"
 	"sync"
@@ -118,6 +119,10 @@ type Proposer interface {
 	OnCommit(height uint64, txs []*tx.Tx)
 }
 
+type RejectingProposer interface {
+	OnReject(height uint64, txs []*tx.Tx)
+}
+
 type StateRootProposer interface {
 	ProposeForState(height uint64, round uint32, prevAttest AttestationSet, prevRoot [32]byte) (*BlockProposal, error)
 }
@@ -201,13 +206,20 @@ func (e *Engine) Start(ctx context.Context) error {
 	} else if rs.Phase == PhaseCommit {
 		proposeTimer.Stop()
 		blockHash, hasQuorum := e.quorumBlock(rs.Precommits, validators, stakes)
-		if hasQuorum && blockHash != [32]byte{} && e.commit(rs, blockHash) {
-			rs.LastAttestation = attestationFromPrecommits(rs.Precommits, blockHash)
-			validators, stakes, err = e.staking.BondedAmounts()
-			if err != nil {
-				return err
+		if hasQuorum && blockHash != [32]byte{} {
+			if e.commit(rs, blockHash) {
+				rs.LastAttestation = attestationFromPrecommits(rs.Precommits, blockHash)
+				validators, stakes, err = e.staking.BondedAmounts()
+				if err != nil {
+					return err
+				}
+				e.startNextRound(rs, validators, stakes, proposeTimer)
+			} else {
+				e.rejectProposal(rs)
+				if err := e.restartRound(rs, validators, stakes, proposeTimer); err != nil {
+					return err
+				}
 			}
-			e.startNextRound(rs, validators, stakes, proposeTimer)
 		}
 	} else if proposerPK == e.kp.PublicKey {
 		rsCopy := rs
@@ -378,6 +390,11 @@ func (e *Engine) handleVote(rs *RoundState, v *Vote, validators [][32]byte, stak
 					}
 					e.startNextRound(rs, validators, stakes, proposeTimer)
 				}
+			} else {
+				e.rejectProposal(rs)
+				if err := e.restartRound(rs, validators, stakes, proposeTimer); err != nil {
+					return
+				}
 			}
 		}
 	}
@@ -506,11 +523,13 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 	}
 	proposalBytes, err := SerializeProposal(rs.Proposal)
 	if err != nil {
+		log.Printf("consensus: failed to serialize committed block height=%d round=%d: %v", rs.Height, rs.Round, err)
 		return false
 	}
 	b.ProposalBytes = proposalBytes
 	_, err = e.sm.ApplyBlockForChain(b, e.chainID)
 	if err != nil {
+		log.Printf("consensus: failed to apply committed block height=%d round=%d: %v", rs.Height, rs.Round, err)
 		return false
 	}
 	_ = e.sm.ClearConsensusState()
@@ -518,6 +537,22 @@ func (e *Engine) commit(rs *RoundState, blockHash [32]byte) bool {
 		e.proposer.OnCommit(rs.Height, rs.Proposal.Txs)
 	}
 	return true
+}
+
+func (e *Engine) rejectProposal(rs *RoundState) {
+	if rejecter, ok := e.proposer.(RejectingProposer); ok && rs.Proposal != nil {
+		rejecter.OnReject(rs.Height, rs.Proposal.Txs)
+	}
+}
+
+func (e *Engine) restartRound(rs *RoundState, validators [][32]byte, stakes []*big.Int, proposeTimer *time.Timer) error {
+	var err error
+	validators, stakes, err = e.staking.BondedAmounts()
+	if err != nil {
+		return err
+	}
+	e.startNextRound(rs, validators, stakes, proposeTimer)
+	return nil
 }
 
 func attestationFromPrecommits(votes map[[32]byte]Vote, blockHash [32]byte) AttestationSet {

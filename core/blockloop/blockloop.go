@@ -181,6 +181,15 @@ func (bl *BlockLoop) propose(height uint64, round uint32, prevAttest consensus.A
 }
 
 func (bl *BlockLoop) OnCommit(height uint64, txs []*tx.Tx) {
+	bl.removeCommitted(txs)
+}
+
+// OnReject removes transactions from a proposal that could not be applied.
+func (bl *BlockLoop) OnReject(height uint64, txs []*tx.Tx) {
+	bl.removeCommitted(txs)
+}
+
+func (bl *BlockLoop) removeCommitted(txs []*tx.Tx) {
 	bl.mempool.mu.Lock()
 	defer bl.mempool.mu.Unlock()
 
