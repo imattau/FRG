@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
@@ -33,7 +34,9 @@ type policy struct {
 	AllowDeploy       bool     `json:"allow_deploy"`
 	AllowBond         bool     `json:"allow_bond"`
 	MaxTransfer       string   `json:"max_transfer"`
+	MaxTransferQuanta string   `json:"max_transfer_quanta"`
 	DailyLimit        string   `json:"daily_limit"`
+	DailyLimitQuanta  string   `json:"daily_limit_quanta"`
 	AllowedRecipients []string `json:"allowed_recipients"`
 	AllowedContracts  []string `json:"allowed_contracts"`
 
@@ -166,11 +169,11 @@ func loadPolicy(path string, autonomous bool) (*policy, error) {
 		}
 	}
 	var err error
-	p.maxTransfer, err = parsePolicyAmount(p.MaxTransfer)
+	p.maxTransfer, err = parsePolicyAmount(p.MaxTransfer, p.MaxTransferQuanta, "max_transfer")
 	if err != nil {
 		return nil, fmt.Errorf("max_transfer: %w", err)
 	}
-	p.dailyLimit, err = parsePolicyAmount(p.DailyLimit)
+	p.dailyLimit, err = parsePolicyAmount(p.DailyLimit, p.DailyLimitQuanta, "daily_limit")
 	if err != nil {
 		return nil, fmt.Errorf("daily_limit: %w", err)
 	}
@@ -188,15 +191,17 @@ func loadPolicy(path string, autonomous bool) (*policy, error) {
 	return p, nil
 }
 
-func parsePolicyAmount(raw string) (*big.Int, error) {
-	if raw == "" {
+func parsePolicyAmount(frgRaw, quantaRaw, label string) (*big.Int, error) {
+	if frgRaw != "" && quantaRaw != "" {
+		return nil, fmt.Errorf("use %s or %s_quanta, not both", label, label)
+	}
+	if frgRaw == "" && quantaRaw == "" {
 		return big.NewInt(0), nil
 	}
-	amount, ok := new(big.Int).SetString(raw, 10)
-	if !ok || amount.Sign() < 0 {
-		return nil, fmt.Errorf("must be a non-negative base-10 integer")
+	if quantaRaw != "" {
+		return denom.ParseQuanta(quantaRaw)
 	}
-	return amount, nil
+	return denom.ParseFRG(frgRaw)
 }
 
 func (s *mcpServer) serve(r io.Reader, w io.Writer) error {
@@ -300,7 +305,8 @@ func (s *mcpServer) tools() []tool {
 		readTool("frg_operator_health", "Check gRPC status and optional metrics /readyz health.", objectSchema(nil, nil)),
 		readTool("frg_operator_readiness", "Diagnose whether this wallet/node appears ready to operate as a validator.", objectSchema(map[string]any{
 			"validator_pubkey": stringSchema("optional validator pubkey hex; defaults to this MCP wallet"),
-			"min_bond":         stringSchema("optional minimum bond amount; default 1000"),
+			"min_bond":         stringSchema("optional minimum bond in FRG decimal units; default 1000"),
+			"min_bond_quanta":  stringSchema("optional raw minimum bond in integer quanta"),
 		}, nil)),
 		readTool("frg_get_contract_state", "Query contract existence, state root, and optionally one state key.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
@@ -311,7 +317,7 @@ func (s *mcpServer) tools() []tool {
 		readTool("frg_work_schema", "Return the standard FRG agent work escrow contract convention.", objectSchema(nil, nil)),
 		readTool("frg_work_build_terms", "Build canonical off-chain work terms and a SHA-256 terms hash.", objectSchema(map[string]any{
 			"description":         stringSchema("work description"),
-			"reward":              stringSchema("base-10 reward amount"),
+			"reward":              stringSchema("reward in FRG decimal units"),
 			"deadline":            stringSchema("deadline or block height string"),
 			"verifier":            stringSchema("optional verifier pubkey hex"),
 			"result_requirements": stringSchema("expected result format or acceptance criteria"),
@@ -319,22 +325,35 @@ func (s *mcpServer) tools() []tool {
 		readTool("frg_work_state", "Query standard agent work escrow state keys from a contract.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
 		}, []string{"contract_address"})),
-		writeTool("frg_transfer", "Autonomously send FRG if policy allows it.", objectSchema(map[string]any{"to": stringSchema("recipient pubkey hex"), "amount": stringSchema("base-10 quanta")}, []string{"to", "amount"})),
-		writeTool("frg_bond", "Autonomously bond this wallet as a validator if policy allows it.", objectSchema(map[string]any{"amount": stringSchema("base-10 quanta")}, []string{"amount"})),
+		writeTool("frg_transfer", "Autonomously send FRG if policy allows it.", objectSchema(map[string]any{
+			"to":            stringSchema("recipient pubkey hex"),
+			"amount":        stringSchema("amount in FRG decimal units"),
+			"amount_quanta": stringSchema("raw amount in integer quanta"),
+		}, []string{"to"})),
+		writeTool("frg_bond", "Autonomously bond this wallet as a validator if policy allows it.", objectSchema(map[string]any{
+			"amount":        stringSchema("amount in FRG decimal units"),
+			"amount_quanta": stringSchema("raw amount in integer quanta"),
+		}, nil)),
 		writeTool("frg_unbond", "Autonomously start validator unbonding if policy allows it.", objectSchema(nil, nil)),
 		writeTool("frg_finalize_unbond", "Autonomously finalize validator unbonding after lockup if policy allows it.", objectSchema(nil, nil)),
 		writeTool("frg_claim_rewards", "Autonomously claim validator rewards if policy allows it.", objectSchema(nil, nil)),
-		writeTool("frg_contract_deploy", "Autonomously deploy a WASM contract if policy allows it.", objectSchema(map[string]any{"wasm_hex": stringSchema("WASM bytes as hex"), "value": stringSchema("optional endowment")}, []string{"wasm_hex"})),
+		writeTool("frg_contract_deploy", "Autonomously deploy a WASM contract if policy allows it.", objectSchema(map[string]any{
+			"wasm_hex":     stringSchema("WASM bytes as hex"),
+			"value":        stringSchema("optional endowment in FRG decimal units"),
+			"value_quanta": stringSchema("optional raw endowment in integer quanta"),
+		}, []string{"wasm_hex"})),
 		writeTool("frg_contract_call", "Autonomously call a contract if policy allows it.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
 			"function":         stringSchema("optional 4-byte exported function name"),
 			"call_data_hex":    stringSchema("optional raw calldata hex"),
-			"value":            stringSchema("optional FRG value"),
+			"value":            stringSchema("optional value in FRG decimal units"),
+			"value_quanta":     stringSchema("optional raw value in integer quanta"),
 		}, []string{"contract_address"})),
 		writeTool("frg_work_action", "Call a standard agent work escrow action if policy allows it.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
 			"action":           stringSchema("post, accept, submit, approve, reject, claim, or cancel"),
-			"value":            stringSchema("optional FRG value, e.g. escrow reward on post"),
+			"value":            stringSchema("optional value in FRG decimal units, e.g. escrow reward on post"),
+			"value_quanta":     stringSchema("optional raw value in integer quanta"),
 		}, []string{"contract_address", "action"})),
 		readTool("frg_request_faucet", "Request faucet funds for this wallet or a supplied pubkey, if --faucet-url is configured.", objectSchema(map[string]any{"pubkey": stringSchema("optional 32-byte pubkey hex")}, nil)),
 	}
@@ -431,11 +450,12 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		var in struct {
 			ValidatorPubkey string `json:"validator_pubkey"`
 			MinBond         string `json:"min_bond"`
+			MinBondQuanta   string `json:"min_bond_quanta"`
 		}
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		resp, err := s.operatorReadiness(ctx, in.ValidatorPubkey, in.MinBond)
+		resp, err := s.operatorReadiness(ctx, in.ValidatorPubkey, in.MinBond, in.MinBondQuanta)
 		if err != nil {
 			return nil, err
 		}
@@ -505,8 +525,9 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		return jsonTool(resp)
 	case "frg_transfer":
 		var in struct {
-			To     string `json:"to"`
-			Amount string `json:"amount"`
+			To           string `json:"to"`
+			Amount       string `json:"amount"`
+			AmountQuanta string `json:"amount_quanta"`
 		}
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
@@ -515,7 +536,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		if err != nil {
 			return nil, err
 		}
-		amount, err := parsePositiveAmount(in.Amount)
+		amount, err := parsePositiveAmountFields(in.Amount, in.AmountQuanta, "amount")
 		if err != nil {
 			return nil, err
 		}
@@ -530,12 +551,13 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		return jsonTool(resp)
 	case "frg_bond":
 		var in struct {
-			Amount string `json:"amount"`
+			Amount       string `json:"amount"`
+			AmountQuanta string `json:"amount_quanta"`
 		}
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
 		}
-		amount, err := parsePositiveAmount(in.Amount)
+		amount, err := parsePositiveAmountFields(in.Amount, in.AmountQuanta, "amount")
 		if err != nil {
 			return nil, err
 		}
@@ -577,8 +599,9 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		return jsonTool(resp)
 	case "frg_contract_deploy":
 		var in struct {
-			WasmHex string `json:"wasm_hex"`
-			Value   string `json:"value"`
+			WasmHex     string `json:"wasm_hex"`
+			Value       string `json:"value"`
+			ValueQuanta string `json:"value_quanta"`
 		}
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
@@ -587,7 +610,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		if err != nil || len(wasm) == 0 {
 			return nil, fmt.Errorf("wasm_hex must be non-empty hex")
 		}
-		value, err := parseOptionalAmount(in.Value)
+		value, err := parseOptionalAmountFields(in.Value, in.ValueQuanta, "value")
 		if err != nil {
 			return nil, err
 		}
@@ -606,6 +629,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 			Function        string `json:"function"`
 			CallDataHex     string `json:"call_data_hex"`
 			Value           string `json:"value"`
+			ValueQuanta     string `json:"value_quanta"`
 		}
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
@@ -618,7 +642,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		if err != nil {
 			return nil, err
 		}
-		value, err := parseOptionalAmount(in.Value)
+		value, err := parseOptionalAmountFields(in.Value, in.ValueQuanta, "value")
 		if err != nil {
 			return nil, err
 		}
@@ -636,6 +660,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 			ContractAddress string `json:"contract_address"`
 			Action          string `json:"action"`
 			Value           string `json:"value"`
+			ValueQuanta     string `json:"value_quanta"`
 		}
 		if err := decodeArgs(args, &in); err != nil {
 			return nil, err
@@ -648,7 +673,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		if err != nil {
 			return nil, err
 		}
-		value, err := parseOptionalAmount(in.Value)
+		value, err := parseOptionalAmountFields(in.Value, in.ValueQuanta, "value")
 		if err != nil {
 			return nil, err
 		}
@@ -664,7 +689,8 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 			"action":   in.Action,
 			"selector": selector,
 			"txid":     resp.TxID,
-			"value":    value.String(),
+			"value":    denom.FormatFRG(value),
+			"quanta":   value.String(),
 			"contract": strings.ToLower(in.ContractAddress),
 		})
 	case "frg_request_faucet":
@@ -715,23 +741,49 @@ func errorToolResult(err error) *toolResult {
 }
 
 func parsePositiveAmount(raw string) (*big.Int, error) {
-	if raw == "" {
-		return nil, fmt.Errorf("amount is required")
-	}
-	amount, ok := new(big.Int).SetString(raw, 10)
-	if !ok || amount.Sign() <= 0 {
-		return nil, fmt.Errorf("amount must be a positive base-10 integer")
+	return parsePositiveAmountFields(raw, "", "amount")
+}
+
+func parsePositiveAmountFields(frgRaw, quantaRaw, label string) (*big.Int, error) {
+	amount, err := parseAmountFields(frgRaw, quantaRaw, label, true)
+	if err != nil {
+		return nil, err
 	}
 	return amount, nil
 }
 
 func parseOptionalAmount(raw string) (*big.Int, error) {
-	if raw == "" {
+	return parseOptionalAmountFields(raw, "", "value")
+}
+
+func parseOptionalAmountFields(frgRaw, quantaRaw, label string) (*big.Int, error) {
+	return parseAmountFields(frgRaw, quantaRaw, label, false)
+}
+
+func parseAmountFields(frgRaw, quantaRaw, label string, positive bool) (*big.Int, error) {
+	if frgRaw != "" && quantaRaw != "" {
+		return nil, fmt.Errorf("use %s or %s_quanta, not both", label, label)
+	}
+	if frgRaw == "" && quantaRaw == "" && !positive {
 		return big.NewInt(0), nil
 	}
-	amount, ok := new(big.Int).SetString(raw, 10)
-	if !ok || amount.Sign() < 0 {
-		return nil, fmt.Errorf("value must be a non-negative base-10 integer")
+	if frgRaw == "" && quantaRaw == "" {
+		return nil, fmt.Errorf("%s is required", label)
+	}
+	var (
+		amount *big.Int
+		err    error
+	)
+	if quantaRaw != "" {
+		amount, err = denom.ParseQuanta(quantaRaw)
+	} else {
+		amount, err = denom.ParseFRG(frgRaw)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	if positive && amount.Sign() <= 0 {
+		return nil, fmt.Errorf("%s must be positive", label)
 	}
 	return amount, nil
 }
@@ -846,7 +898,9 @@ type readinessResponse struct {
 	Account         accountResponse `json:"account"`
 	Bonded          bool            `json:"bonded"`
 	Bond            string          `json:"bond"`
+	BondFRG         string          `json:"bond_frg"`
 	MinBond         string          `json:"min_bond"`
+	MinBondFRG      string          `json:"min_bond_frg"`
 	NodeHeight      uint64          `json:"node_height"`
 	PeerCount       uint64          `json:"peer_count"`
 	MempoolLen      uint64          `json:"mempool_len"`
@@ -857,13 +911,13 @@ type readinessResponse struct {
 	Actions         []string        `json:"actions,omitempty"`
 }
 
-func (s *mcpServer) operatorReadiness(ctx context.Context, validatorHex string, minBondRaw string) (*readinessResponse, error) {
-	minBond, err := parseOptionalAmount(minBondRaw)
+func (s *mcpServer) operatorReadiness(ctx context.Context, validatorHex string, minBondRaw string, minBondQuantaRaw string) (*readinessResponse, error) {
+	minBond, err := parseOptionalAmountFields(minBondRaw, minBondQuantaRaw, "min_bond")
 	if err != nil {
 		return nil, err
 	}
 	if minBond.Sign() == 0 {
-		minBond = big.NewInt(1000)
+		minBond = new(big.Int).Mul(big.NewInt(1000), denom.QuantaPerFRG)
 	}
 	validator := s.w.PublicKey()
 	if validatorHex != "" {
@@ -890,6 +944,7 @@ func (s *mcpServer) operatorReadiness(ctx context.Context, validatorHex string, 
 		ValidatorPubkey: validatorHex,
 		Account:         formatAccount(acct),
 		MinBond:         minBond.String(),
+		MinBondFRG:      denom.FormatFRG(minBond),
 		NodeHeight:      statusResp.Height,
 		PeerCount:       statusResp.PeerCount,
 		MempoolLen:      statusResp.MempoolLen,
@@ -902,6 +957,7 @@ func (s *mcpServer) operatorReadiness(ctx context.Context, validatorHex string, 
 		}
 		out.Bonded = true
 		out.Bond = v.Bond
+		out.BondFRG = formatQuantaAsFRG(v.Bond)
 		break
 	}
 	bal, _ := new(big.Int).SetString(acct.Balance, 10)
@@ -925,8 +981,8 @@ func (s *mcpServer) operatorReadiness(ctx context.Context, validatorHex string, 
 	}
 	addCheck(statusResp.ValidatorCount > 0, "validator set present", "confirm genesis or bonded validators")
 	addCheck(bal.Sign() > 0 || out.Bonded, "validator account funded or bonded", "fund "+validatorHex+" before bonding")
-	addCheck(out.Bonded, "validator bonded", "submit frg_bond with at least "+minBond.String())
-	addCheck(!out.Bonded || bond.Cmp(minBond) >= 0, "bond meets minimum", "increase bond to at least "+minBond.String())
+	addCheck(out.Bonded, "validator bonded", "submit frg_bond with at least "+denom.FormatFRG(minBond)+" FRG")
+	addCheck(!out.Bonded || bond.Cmp(minBond) >= 0, "bond meets minimum", "increase bond to at least "+denom.FormatFRG(minBond)+" FRG")
 	if statusResp.GrpcOnly {
 		out.Warnings = append(out.Warnings, "node is running in grpc_only mode and will not participate in P2P consensus")
 	}
@@ -1102,14 +1158,16 @@ func (p *policy) recordSpend(amount *big.Int) {
 }
 
 type accountResponse struct {
-	Pubkey  string `json:"pubkey"`
-	Balance string `json:"balance"`
-	Nonce   uint64 `json:"nonce"`
+	Pubkey     string `json:"pubkey"`
+	Balance    string `json:"balance"`
+	BalanceFRG string `json:"balance_frg"`
+	Nonce      uint64 `json:"nonce"`
 }
 
 type validatorEntry struct {
-	Pubkey string `json:"pubkey"`
-	Bond   string `json:"bond"`
+	Pubkey  string `json:"pubkey"`
+	Bond    string `json:"bond"`
+	BondFRG string `json:"bond_frg"`
 }
 
 type validatorsResponse struct {
@@ -1141,9 +1199,10 @@ type blockTelemetryResponse struct {
 
 func formatAccount(resp *frgpb.AccountResponse) accountResponse {
 	return accountResponse{
-		Pubkey:  hex.EncodeToString(resp.Pubkey),
-		Balance: resp.Balance,
-		Nonce:   resp.Nonce,
+		Pubkey:     hex.EncodeToString(resp.Pubkey),
+		Balance:    resp.Balance,
+		BalanceFRG: formatQuantaAsFRG(resp.Balance),
+		Nonce:      resp.Nonce,
 	}
 }
 
@@ -1154,11 +1213,20 @@ func formatValidators(resp *frgpb.ValidatorList) validatorsResponse {
 			continue
 		}
 		out.Validators = append(out.Validators, validatorEntry{
-			Pubkey: hex.EncodeToString(v.Pubkey),
-			Bond:   v.Bond,
+			Pubkey:  hex.EncodeToString(v.Pubkey),
+			Bond:    v.Bond,
+			BondFRG: formatQuantaAsFRG(v.Bond),
 		})
 	}
 	return out
+}
+
+func formatQuantaAsFRG(raw string) string {
+	q, ok := new(big.Int).SetString(raw, 10)
+	if !ok {
+		return "0"
+	}
+	return denom.FormatFRG(q)
 }
 
 func formatContractState(resp *frgpb.ContractStateResponse) contractStateResponse {

@@ -15,6 +15,7 @@ FRG processes up to **65,536 transactions per block**, organising them into a K=
 | Branching factor K | 4 |
 | Max transactions/block (T_MAX) | 65,536 |
 | Fixed-point denominator (SCALE) | 10^18 |
+| Token denomination | 1 FRG = 10^18 quanta |
 | Hash function | SHA2-256-SINGLE |
 | Signing scheme | Ed25519 sender signatures |
 | Max tx payload | 70,000 bytes |
@@ -88,8 +89,17 @@ Telemetry is available through the node gRPC API (`GetBlockTelemetry`), the Go w
 
 ## Economic Model
 
+### Denominations
+
+FRG balances are stored on-chain as unsigned integer quanta. One FRG is
+`1,000,000,000,000,000,000` quanta, and one quantum is the smallest transferable
+unit. User-facing tools (`frg-cli --amount`, `frg-wallet` JSON `amount`/`value`,
+and `frg-mcp` `amount`/`value`/policy limits) accept FRG decimal strings such as
+`1`, `1.5`, or `0.000000000000000001`. Raw quanta are still available through
+explicit `*_quanta` fields and `frg-cli --amount-quanta`.
+
 ### Staking
-- Minimum bond: 1,000 quanta
+- Minimum bond: 1,000 FRG (`1,000,000,000,000,000,000,000` quanta)
 - Unbonding lockup: 1,000 blocks
 - Equivocation: full bond slashed, validator removed
 - Liveness: 10% bond slashed after 5 cumulative misses; validator remains active

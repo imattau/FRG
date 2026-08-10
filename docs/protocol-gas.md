@@ -33,6 +33,11 @@ The current `1000` divisor keeps pure WASM compute contracts cheap while host
 functions add explicit fixed and per-byte charges for storage, balance,
 transfer, logging, and crypto precompile work.
 
+Gas fees are charged in quanta. `1 FRG = 10^18 quanta`, so at the current
+minimum base fee of 1 quantum per gas, even the measured `bn254_pairing`
+workload costs `65,338` quanta, or `0.000000000000065338 FRG`, before any
+base-fee increase from block demand.
+
 Latest measured examples on the local benchmark machine:
 
 | workload | fuel | protocol gas |

@@ -59,7 +59,7 @@ func TestStakingBondUnbondCycle(t *testing.T) {
 	}
 	bal, _ := h.Ledger.BalanceOf(kp.PublicKey)
 	// bond was 2000, seeded 3000 (amount+1000), remaining 1000
-	if bal.Cmp(big.NewInt(1000)) != 0 {
+	if bal.Cmp(q(1000)) != 0 {
 		t.Fatalf("before lockup: got %v want 1000", bal)
 	}
 	// after lockup
@@ -67,7 +67,7 @@ func TestStakingBondUnbondCycle(t *testing.T) {
 		t.Fatalf("Finalize after lockup: %v", err)
 	}
 	bal, _ = h.Ledger.BalanceOf(kp.PublicKey)
-	if bal.Cmp(big.NewInt(3000)) != 0 {
+	if bal.Cmp(q(3000)) != 0 {
 		t.Fatalf("after finalize: got %v want 3000", bal)
 	}
 }
@@ -75,8 +75,10 @@ func TestStakingBondUnbondCycle(t *testing.T) {
 func TestStakingBondMinimumEnforced(t *testing.T) {
 	h := newHarness(t)
 	kp := makeKeypair(t)
-	seedAccount(t, h.Ledger, kp.PublicKey, 5000)
-	err := h.Staking.Bond(kp.PublicKey, big.NewInt(999), 1)
+	if err := h.Ledger.Seed(kp.PublicKey, q(5000)); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	err := h.Staking.Bond(kp.PublicKey, q(999), 1)
 	assertCode(t, err, rgerrors.ErrBondBelowMinimum)
 }
 
@@ -86,7 +88,7 @@ func TestGasAccrueClaimRoundTrip(t *testing.T) {
 	bondValidator(t, h, kp, 1000, 1)
 
 	validators := [][32]byte{kp.PublicKey}
-	bonds := []*big.Int{big.NewInt(1000)}
+	bonds := []*big.Int{q(1000)}
 	if err := gas.Accrue(h.Ledger, big.NewInt(100), validators, bonds); err != nil {
 		t.Fatalf("Accrue: %v", err)
 	}
@@ -113,7 +115,7 @@ func TestGasProportionalDistribution(t *testing.T) {
 	kpA := makeKeypair(t)
 	kpB := makeKeypair(t)
 	validators := [][32]byte{kpA.PublicKey, kpB.PublicKey}
-	bonds := []*big.Int{big.NewInt(3000), big.NewInt(1000)}
+	bonds := []*big.Int{q(3000), q(1000)}
 
 	// Seed for fees (Accrue doesn't check balance, but we need to bond them first)
 	bondValidator(t, h, kpA, 3000, 1)
@@ -223,7 +225,7 @@ func TestRewardsAccumulateAcrossBlocks(t *testing.T) {
 	kp := makeKeypair(t)
 	bondValidator(t, h, kp, 1000, 1)
 	validators := [][32]byte{kp.PublicKey}
-	bonds := []*big.Int{big.NewInt(1000)}
+	bonds := []*big.Int{q(1000)}
 
 	for i := 0; i < 3; i++ {
 		_ = gas.Accrue(h.Ledger, big.NewInt(100), validators, bonds)

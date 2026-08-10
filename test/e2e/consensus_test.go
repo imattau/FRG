@@ -77,13 +77,13 @@ func TestLivenessPenalties(t *testing.T) {
 		}
 	}
 
-	balBefore, _ := h.Ledger.BalanceOf(kp.PublicKey) // seeded 11000, bonded 10000 -> 1000 remaining
-	_, bondedBefore, _ := h.Staking.BondedAmounts()  // 10000
-	if bondedBefore[0].Int64() != 10000 {
-		t.Fatalf("expected 10000 bonded, got %v", bondedBefore[0].Int64())
+	balBefore, _ := h.Ledger.BalanceOf(kp.PublicKey) // seeded 11000 FRG, bonded 10000 FRG -> 1000 FRG remaining
+	_, bondedBefore, _ := h.Staking.BondedAmounts()
+	if bondedBefore[0].Cmp(q(10000)) != 0 {
+		t.Fatalf("expected 10000 FRG bonded, got %v", bondedBefore[0])
 	}
 
-	// 5th miss — slash 10% of 10000 = 1000
+	// 5th miss — slash 10% of 10000 FRG = 1000 FRG
 	count, err := h.Staking.RecordMiss(kp.PublicKey)
 	if err != nil {
 		t.Fatalf("5th miss: %v", err)
@@ -98,8 +98,8 @@ func TestLivenessPenalties(t *testing.T) {
 	}
 
 	_, bondedAfter, _ := h.Staking.BondedAmounts()
-	if bondedAfter[0].Int64() != 9000 {
-		t.Fatalf("bonded after slash: got %v want 9000", bondedAfter[0].Int64())
+	if bondedAfter[0].Cmp(q(9000)) != 0 {
+		t.Fatalf("bonded after slash: got %v want %v", bondedAfter[0], q(9000))
 	}
 }
 

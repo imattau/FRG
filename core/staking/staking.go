@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"math/big"
 
+	"github.com/imattau/frg/core/denom"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
@@ -13,6 +14,7 @@ import (
 )
 
 const (
+	// MinBond is denominated in whole FRG. Escrow stores MinBond * 10^18 quanta.
 	MinBond         = int64(1000)
 	UnbondingBlocks = uint64(1000)
 	MissThreshold   = uint64(5)
@@ -25,7 +27,7 @@ const (
 )
 
 var validatorsBucket = []byte("validators")
-var minBondAmount = big.NewInt(MinBond)
+var minBondAmount = new(big.Int).Mul(big.NewInt(MinBond), denom.QuantaPerFRG)
 
 const domainStakingEscrow = "FRG_STAKING_ESCROW_V1\x00"
 

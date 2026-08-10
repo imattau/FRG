@@ -5,12 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/imattau/frg/core/denom"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/staking"
-	"github.com/imattau/frg/core/tx"
 	"github.com/imattau/frg/core/tree"
+	"github.com/imattau/frg/core/tx"
 )
 
 type harness struct {
@@ -84,10 +85,16 @@ func seedAccount(t testing.TB, l *ledger.Ledger, pub [32]byte, amount int64) {
 	}
 }
 
+func q(frg int64) *big.Int {
+	return new(big.Int).Mul(big.NewInt(frg), denom.QuantaPerFRG)
+}
+
 func bondValidator(t testing.TB, h *harness, kp *keys.Keypair, amount int64, block uint64) {
 	t.Helper()
-	seedAccount(t, h.Ledger, kp.PublicKey, amount+1000) // extra for fees
-	if err := h.Staking.Bond(kp.PublicKey, big.NewInt(amount), block); err != nil {
+	if err := h.Ledger.Seed(kp.PublicKey, q(amount+1000)); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if err := h.Staking.Bond(kp.PublicKey, q(amount), block); err != nil {
 		t.Fatalf("Bond: %v", err)
 	}
 }

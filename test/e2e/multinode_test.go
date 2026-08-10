@@ -130,7 +130,7 @@ func TestMultiNodeConsensus(t *testing.T) {
 
 	// Genesis setup: seed + bond all 4 on all nodes
 	for _, target := range nodes {
-		initializeNodeGenesis(t, target, nodes, big.NewInt(9000), big.NewInt(1000))
+		initializeNodeGenesis(t, target, nodes, q(9000), q(1000))
 	}
 
 	// Full mesh connect

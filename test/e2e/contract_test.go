@@ -39,7 +39,7 @@ func TestContractE2E(t *testing.T) {
 
 	// Genesis: seed + bond both validators
 	for _, target := range nodes {
-		initializeNodeGenesis(t, target, nodes, big.NewInt(9000), big.NewInt(1000))
+		initializeNodeGenesis(t, target, nodes, q(9000), q(1000))
 	}
 
 	// Connect mesh

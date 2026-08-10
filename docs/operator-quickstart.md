@@ -74,7 +74,11 @@ go build -o frg-cli ./cmd/frg-cli
   --amount 1000
 ```
 
-The bond amount must be at least the protocol minimum. The account also needs enough extra balance to pay transaction gas. Once the bond transaction is committed, the node appears in `ListValidators` and participates in proposer/vote selection.
+`--amount 1000` means 1,000 FRG. The CLI converts it to quanta before signing.
+Use `--amount-quanta` only for raw integer quanta. The bond amount must be at
+least the protocol minimum of 1,000 FRG. The account also needs enough extra
+balance to pay transaction gas. Once the bond transaction is committed, the node
+appears in `ListValidators` and participates in proposer/vote selection.
 
 Confirm activation:
 
@@ -106,6 +110,9 @@ curl -X POST http://127.0.0.1:8090/bond \
   -d '{"amount":"1000"}'
 ```
 
+Wallet API `amount` fields are FRG decimal strings. Use `amount_quanta` only for
+raw quanta.
+
 ## Get Tokens
 
 Users and new validators get FRG from genesis allocations, a funded treasury account, a faucet, or another holder. Transfers are sender-signed, so funded accounts can send directly to any user or validator pubkey:
@@ -116,6 +123,9 @@ Users and new validators get FRG from genesis allocations, a funded treasury acc
   --to USER_OR_VALIDATOR_PUBKEY \
   --amount 100
 ```
+
+This sends 100 FRG. The recipient can then bond 1,000 FRG once they have enough
+funding.
 
 The faucet endpoint also funds the requested pubkey directly:
 

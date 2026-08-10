@@ -36,6 +36,11 @@ Use a policy file for autonomous signing/submission:
 }
 ```
 
+Policy `max_transfer` and `daily_limit` values are FRG decimal strings. Use
+`max_transfer_quanta` or `daily_limit_quanta` only for raw integer quanta. The
+same convention applies to tool inputs: `amount` and `value` are FRG decimal
+strings; `amount_quanta` and `value_quanta` are explicit raw quanta fields.
+
 Start the server:
 
 ```sh
@@ -91,7 +96,12 @@ Use `frg_operator_readiness` to check whether the MCP wallet or a supplied pubke
 }
 ```
 
-It checks account funding, bonded status, minimum bond, validator set presence, peer count, mempool length, consensus phase, and whether the node is running in `grpc_only` mode.
+`min_bond` is in FRG decimal units and defaults to `1000`. Use
+`min_bond_quanta` for a raw quanta threshold. The response includes both raw
+quanta and `_frg` display fields for balances and bonds. It checks account
+funding, bonded status, minimum bond, validator set presence, peer count,
+mempool length, consensus phase, and whether the node is running in `grpc_only`
+mode.
 
 Use `frg_operator_health` for basic node health. If the MCP server is started with `--metrics-url http://127.0.0.1:9090`, it also checks `/readyz`.
 
@@ -120,6 +130,8 @@ Newly committed blocks persist an exact compact telemetry summary, including tou
 `frg_work_state` queries the standard state keys from a work contract.
 
 `frg_work_action` calls one standard action on a work contract. The current FRG contract dispatcher selects the exported function from the first four calldata bytes. Rich payloads such as full terms, result bodies, or verifier reports should be hashed off-chain and represented on-chain by convention keys unless a specific contract implements more storage behavior.
+Its `value` field is an FRG decimal string, which lets an agent post escrow
+funds such as `"25"` without calculating quanta.
 
 ## Agent-To-Agent Use
 

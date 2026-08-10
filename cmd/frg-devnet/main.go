@@ -39,6 +39,12 @@ prevote_timeout_ms = 3000
 precommit_timeout_ms = 3000
 `
 
+const (
+	defaultValidatorBondQuanta    = "1000000000000000000000"
+	defaultValidatorBalanceQuanta = "10000000000000000000000"
+	defaultFaucetBalanceQuanta    = "1000000000000000000000000"
+)
+
 type devNode struct {
 	index    int
 	kp       *keys.Keypair
@@ -56,13 +62,13 @@ func main() {
 	validators := flag.Int("validators", 7, "number of validator nodes")
 	outputDir := flag.String("output-dir", "devnet-data", "output directory")
 	chainID := flag.String("chain-id", "frg-devnet-1", "chain identifier")
-	bond := flag.String("bond", "1000", "bond amount per validator")
-	balance := flag.String("balance", "10000", "initial balance per validator")
+	bond := flag.String("bond", defaultValidatorBondQuanta, "bond amount per validator in quanta")
+	balance := flag.String("balance", defaultValidatorBalanceQuanta, "initial balance per validator in quanta")
 	baseP2PPort := flag.Int("base-p2p-port", 17777, "starting P2P port (node 0)")
 	baseGRPCPort := flag.Int("base-grpc-port", 50051, "starting gRPC port (node 0)")
 	dockerCompose := flag.Bool("docker", true, "use /dns4/ scheme for peer addresses (Docker Compose)")
 	stressAccounts := flag.Int("stress-accounts", 0, "number of pre-funded stress-test accounts")
-	faucetBalance := flag.String("faucet-balance", "1000000", "faucet genesis balance")
+	faucetBalance := flag.String("faucet-balance", defaultFaucetBalanceQuanta, "faucet genesis balance in quanta")
 	flag.Parse()
 
 	n := *validators

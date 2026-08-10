@@ -13,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
 	"github.com/imattau/frg/wallet"
@@ -29,14 +30,16 @@ type pubkeyResponse struct {
 }
 
 type accountResponse struct {
-	Pubkey  string `json:"pubkey"`
-	Balance string `json:"balance"`
-	Nonce   uint64 `json:"nonce"`
+	Pubkey     string `json:"pubkey"`
+	Balance    string `json:"balance"`
+	BalanceFRG string `json:"balance_frg"`
+	Nonce      uint64 `json:"nonce"`
 }
 
 type validatorEntry struct {
-	Pubkey string `json:"pubkey"`
-	Bond   string `json:"bond"`
+	Pubkey  string `json:"pubkey"`
+	Bond    string `json:"bond"`
+	BondFRG string `json:"bond_frg"`
 }
 
 type validatorsResponse struct {
@@ -44,17 +47,20 @@ type validatorsResponse struct {
 }
 
 type transferRequest struct {
-	To     string `json:"to"`
-	Amount string `json:"amount"`
+	To           string `json:"to"`
+	Amount       string `json:"amount"`
+	AmountQuanta string `json:"amount_quanta"`
 }
 
 type bondRequest struct {
-	Amount string `json:"amount"`
+	Amount       string `json:"amount"`
+	AmountQuanta string `json:"amount_quanta"`
 }
 
 type contractDeployRequest struct {
-	WasmHex string `json:"wasm_hex"`
-	Value   string `json:"value"`
+	WasmHex     string `json:"wasm_hex"`
+	Value       string `json:"value"`
+	ValueQuanta string `json:"value_quanta"`
 }
 
 type contractCallRequest struct {
@@ -62,6 +68,7 @@ type contractCallRequest struct {
 	CallDataHex     string `json:"call_data_hex"`
 	Function        string `json:"function"`
 	Value           string `json:"value"`
+	ValueQuanta     string `json:"value_quanta"`
 }
 
 type contractAddressResponse struct {
@@ -208,8 +215,9 @@ func (s *server) handleValidators(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out.Validators = append(out.Validators, validatorEntry{
-			Pubkey: hex.EncodeToString(v.Pubkey),
-			Bond:   v.Bond,
+			Pubkey:  hex.EncodeToString(v.Pubkey),
+			Bond:    v.Bond,
+			BondFRG: formatQuantaAsFRG(v.Bond),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -229,7 +237,7 @@ func (s *server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	amount, err := parseAmount(req.Amount)
+	amount, err := parseAmountFields(req.Amount, req.AmountQuanta, "amount", true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -251,7 +259,7 @@ func (s *server) handleBond(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
 		return
 	}
-	amount, err := parseAmount(req.Amount)
+	amount, err := parseAmountFields(req.Amount, req.AmountQuanta, "amount", true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -336,7 +344,7 @@ func (s *server) handleContractDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("wasm_hex must be non-empty hex"))
 		return
 	}
-	value, err := parseOptionalAmount(req.Value)
+	value, err := parseAmountFields(req.Value, req.ValueQuanta, "value", false)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -394,7 +402,7 @@ func (s *server) handleContractCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	value, err := parseOptionalAmount(req.Value)
+	value, err := parseAmountFields(req.Value, req.ValueQuanta, "value", false)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -445,24 +453,30 @@ func (s *server) pubkeyFromQuery(r *http.Request) ([32]byte, error) {
 	return wallet.DecodePubKey(pubkeyHex)
 }
 
-func parseAmount(raw string) (*big.Int, error) {
-	if raw == "" {
-		return nil, fmt.Errorf("amount is required")
+func parseAmountFields(frgRaw, quantaRaw, label string, positive bool) (*big.Int, error) {
+	if frgRaw != "" && quantaRaw != "" {
+		return nil, fmt.Errorf("use %s or %s_quanta, not both", label, label)
 	}
-	amount, ok := new(big.Int).SetString(raw, 10)
-	if !ok || amount.Sign() <= 0 {
-		return nil, fmt.Errorf("amount must be a positive base-10 integer")
-	}
-	return amount, nil
-}
-
-func parseOptionalAmount(raw string) (*big.Int, error) {
-	if raw == "" {
+	if frgRaw == "" && quantaRaw == "" && !positive {
 		return big.NewInt(0), nil
 	}
-	amount, ok := new(big.Int).SetString(raw, 10)
-	if !ok || amount.Sign() < 0 {
-		return nil, fmt.Errorf("value must be a non-negative base-10 integer")
+	if frgRaw == "" && quantaRaw == "" {
+		return nil, fmt.Errorf("%s is required", label)
+	}
+	var (
+		amount *big.Int
+		err    error
+	)
+	if quantaRaw != "" {
+		amount, err = denom.ParseQuanta(quantaRaw)
+	} else {
+		amount, err = denom.ParseFRG(frgRaw)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	if positive && amount.Sign() <= 0 {
+		return nil, fmt.Errorf("%s must be positive", label)
 	}
 	return amount, nil
 }
@@ -508,10 +522,19 @@ func queryKey(r *http.Request) ([]byte, error) {
 
 func formatAccount(resp *frgpb.AccountResponse) accountResponse {
 	return accountResponse{
-		Pubkey:  hex.EncodeToString(resp.Pubkey),
-		Balance: resp.Balance,
-		Nonce:   resp.Nonce,
+		Pubkey:     hex.EncodeToString(resp.Pubkey),
+		Balance:    resp.Balance,
+		BalanceFRG: formatQuantaAsFRG(resp.Balance),
+		Nonce:      resp.Nonce,
 	}
+}
+
+func formatQuantaAsFRG(raw string) string {
+	q, ok := new(big.Int).SetString(raw, 10)
+	if !ok {
+		return "0"
+	}
+	return denom.FormatFRG(q)
 }
 
 func formatContractState(resp *frgpb.ContractStateResponse) contractStateResponse {

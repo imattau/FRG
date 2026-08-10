@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/imattau/frg/core/denom"
 	frgpb "github.com/imattau/frg/proto"
 	bolt "go.etcd.io/bbolt"
 	"google.golang.org/grpc"
@@ -335,10 +337,9 @@ var pageTemplate = template.Must(template.New("page").Parse(`
         const data = await fetchJSON('/api/validators');
         const tbody = document.getElementById('valTable');
         document.getElementById('valCount').textContent = '(' + (data.validators ? data.validators.length : 0) + ')';
-        const total = (data.validators || []).reduce((s, v) => s + Number(v.bond || 0), 0);
-        document.getElementById('valTotalBond').textContent = 'Total stake: ' + total.toLocaleString();
+        document.getElementById('valTotalBond').textContent = 'Total stake: ' + (data.total_bond_frg || '0') + ' FRG';
         if (!data.validators || data.validators.length === 0) { tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No validators bonded.</td></tr>'; return; }
-        tbody.innerHTML = data.validators.map((v, i) => '<tr><td>' + (i+1) + '</td><td>' + shortHex(v.pubkey_hex, 14) + '</td><td>' + Number(v.bond || 0).toLocaleString() + '</td></tr>').join('');
+        tbody.innerHTML = data.validators.map((v, i) => '<tr><td>' + (i+1) + '</td><td>' + shortHex(v.pubkey_hex, 14) + '</td><td>' + (v.bond_frg || '0') + ' FRG</td></tr>').join('');
       } catch(e) { document.getElementById('valTable').innerHTML = '<tr><td colspan="3" class="empty-state">Error: ' + e + '</td></tr>'; }
     }
     if (validatorsTimer) clearInterval(validatorsTimer);
@@ -376,7 +377,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`
       if (!pubkey || pubkey.length !== 64) { document.getElementById('acctResult').textContent = 'Enter a valid 32-byte hex pubkey.'; return; }
       try {
         const data = await fetchJSON('/api/account?pubkey=' + pubkey);
-        document.getElementById('acctResult').innerHTML = 'Pubkey: <b>' + shortHex(data.pubkey, 16) + '</b><br>Balance: <b>' + (data.balance || '0') + '</b><br>Nonce: <b>' + (data.nonce || 0) + '</b>';
+        document.getElementById('acctResult').innerHTML = 'Pubkey: <b>' + shortHex(data.pubkey, 16) + '</b><br>Balance: <b>' + (data.balance_frg || '0') + ' FRG</b><br>Quanta: <b>' + (data.balance || '0') + '</b><br>Nonce: <b>' + (data.nonce || 0) + '</b>';
         document.getElementById('acctResult').className = 'status ok';
       } catch(e) { document.getElementById('acctResult').textContent = 'Error: ' + e; document.getElementById('acctResult').className = 'status err'; }
     });
@@ -732,15 +733,21 @@ func (s *server) handleValidators(w http.ResponseWriter, r *http.Request) {
 	type valOut struct {
 		PubkeyHex string `json:"pubkey_hex"`
 		Bond      string `json:"bond"`
+		BondFRG   string `json:"bond_frg"`
 	}
 	out := make([]valOut, 0, len(resp.Validators))
+	totalBond := big.NewInt(0)
 	for _, v := range resp.Validators {
+		if q, ok := new(big.Int).SetString(v.Bond, 10); ok {
+			totalBond.Add(totalBond, q)
+		}
 		out = append(out, valOut{
 			PubkeyHex: hex.EncodeToString(v.Pubkey),
 			Bond:      v.Bond,
+			BondFRG:   formatQuantaAsFRG(v.Bond),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"validators": out})
+	writeJSON(w, http.StatusOK, map[string]any{"validators": out, "total_bond_frg": denom.FormatFRG(totalBond), "total_bond": totalBond.String()})
 }
 
 func (s *server) handleMempool(w http.ResponseWriter, r *http.Request) {
@@ -820,10 +827,19 @@ func (s *server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pubkey":  hex.EncodeToString(resp.Pubkey),
-		"balance": resp.Balance,
-		"nonce":   resp.Nonce,
+		"pubkey":      hex.EncodeToString(resp.Pubkey),
+		"balance":     resp.Balance,
+		"balance_frg": formatQuantaAsFRG(resp.Balance),
+		"nonce":       resp.Nonce,
 	})
+}
+
+func formatQuantaAsFRG(raw string) string {
+	q, ok := new(big.Int).SetString(raw, 10)
+	if !ok {
+		return "0"
+	}
+	return denom.FormatFRG(q)
 }
 
 func (s *server) captureBlocks() {

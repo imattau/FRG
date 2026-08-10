@@ -6,8 +6,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/ledger"
 )
+
+func q(frg int64) *big.Int {
+	return new(big.Int).Mul(big.NewInt(frg), denom.QuantaPerFRG)
+}
 
 func TestRecordSerialisation(t *testing.T) {
 	// Old 49-byte record must decode with MissCount=0
@@ -48,7 +53,7 @@ func TestRecordMiss(t *testing.T) {
 	defer s.Close()
 
 	val := [32]byte{0x01}
-	amt := big.NewInt(5000)
+	amt := q(5000)
 	s.ledger.Seed(val, amt)
 	s.Bond(val, amt, 1)
 
@@ -61,14 +66,14 @@ func TestRecordMiss(t *testing.T) {
 		if count != i {
 			t.Fatalf("RecordMiss %d: got count %d want %d", i, count, i)
 		}
-		
+
 		storedCount, _ := s.MissCountOf(val)
 		if storedCount != i {
 			t.Fatalf("MissCountOf %d: got %d want %d", i, storedCount, i)
 		}
 	}
 
-	// 5th miss: slash 10% (500 quanta) and reset count to 0
+	// 5th miss: slash 10% and reset count to 0
 	count, err := s.RecordMiss(val)
 	if err != nil {
 		t.Fatalf("RecordMiss 5: %v", err)
@@ -82,9 +87,9 @@ func TestRecordMiss(t *testing.T) {
 		t.Fatalf("MissCountOf 5: got %d want 0", storedCount)
 	}
 
-	// Check bond amount after slash (5000 - 10% = 4500)
+	// Check bond amount after slash (5000 FRG - 10% = 4500 FRG)
 	_, amounts, _ := s.BondedAmounts()
-	if amounts[0].Int64() != 4500 {
-		t.Fatalf("BondedAmount after slash: got %d want 4500", amounts[0].Int64())
+	if amounts[0].Cmp(q(4500)) != 0 {
+		t.Fatalf("BondedAmount after slash: got %s want %s", amounts[0], q(4500))
 	}
 }

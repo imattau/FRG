@@ -2,7 +2,6 @@ package e2e_test
 
 import (
 	"context"
-	"math/big"
 	"testing"
 	"time"
 )
@@ -23,7 +22,7 @@ func TestMultiBlockConsensus(t *testing.T) {
 	}()
 
 	for _, target := range nodes {
-		initializeNodeGenesis(t, target, nodes, bigInt(9000), bigInt(1000))
+		initializeNodeGenesis(t, target, nodes, q(9000), q(1000))
 	}
 
 	for i := 0; i < len(nodes); i++ {
@@ -74,5 +73,3 @@ func TestMultiBlockConsensus(t *testing.T) {
 	}
 	t.Log("all 3 nodes reached height >= 2 — multi-block consensus works")
 }
-
-func bigInt(v int64) *big.Int { return new(big.Int).SetInt64(v) }

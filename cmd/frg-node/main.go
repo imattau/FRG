@@ -52,8 +52,8 @@ const (
 	defaultMetricsListenAddr = "127.0.0.1:9090"
 	defaultTimeoutMS         = 3000
 	defaultProposeDelayMS    = 500
-	defaultGenesisBond       = "1000"
-	defaultGenesisBalance    = "10000"
+	defaultGenesisBond       = "1000000000000000000000"
+	defaultGenesisBalance    = "10000000000000000000000"
 	defaultChainID           = "frg-mainnet-1"
 )
 

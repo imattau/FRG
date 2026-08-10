@@ -40,7 +40,7 @@ func TestEquivocationSlash(t *testing.T) {
 
 	// Escrow should be burned
 	bal, _ := h.Ledger.BalanceOf(kp.PublicKey)
-	if bal.Cmp(big.NewInt(1000)) != 0 {
+	if bal.Cmp(q(1000)) != 0 {
 		t.Fatalf("balance: got %v want 1000 (only seed remaining, bond burned)", bal)
 	}
 }
@@ -170,6 +170,6 @@ func TestDoubleBond(t *testing.T) {
 	bondValidator(t, h, kp, 2000, 1)
 
 	seedAccount(t, h.Ledger, kp.PublicKey, 2000)
-	err := h.Staking.Bond(kp.PublicKey, big.NewInt(1000), 2)
+	err := h.Staking.Bond(kp.PublicKey, q(1000), 2)
 	assertCode(t, err, rgerrors.ErrAlreadyBonded)
 }

@@ -2,10 +2,12 @@ package genesis_test
 
 import (
 	"encoding/hex"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/genesis"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/staking"
@@ -20,6 +22,10 @@ func writeFile(t *testing.T, dir, name, content string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func q(frg int64) string {
+	return new(big.Int).Mul(big.NewInt(frg), denom.QuantaPerFRG).String()
 }
 
 func TestLoadGenesis(t *testing.T) {
@@ -60,10 +66,10 @@ func TestApplyFreshDB(t *testing.T) {
 
 	g := &genesis.Genesis{
 		Balances: []genesis.BalanceEntry{
-			{Account: hex.EncodeToString(make([]byte, 32)), Amount: "10000"},
+			{Account: hex.EncodeToString(make([]byte, 32)), Amount: q(10000)},
 		},
 		Validators: []genesis.ValidatorEntry{
-			{PubKey: hex.EncodeToString(make([]byte, 32)), Bond: "5000"},
+			{PubKey: hex.EncodeToString(make([]byte, 32)), Bond: q(5000)},
 		},
 	}
 
@@ -77,8 +83,9 @@ func TestApplyFreshDB(t *testing.T) {
 	if !tracked {
 		t.Fatal("genesis did not initialize total supply")
 	}
-	if totalSupply.Int64() != 10000 {
-		t.Fatalf("expected total supply 10000, got %d", totalSupply.Int64())
+	wantSupply := new(big.Int).Mul(big.NewInt(10000), denom.QuantaPerFRG)
+	if totalSupply.Cmp(wantSupply) != 0 {
+		t.Fatalf("expected total supply %s, got %s", wantSupply, totalSupply)
 	}
 
 	h, _ := sm.CurrentHeight()
@@ -89,8 +96,9 @@ func TestApplyFreshDB(t *testing.T) {
 	var addr [32]byte
 	bal, _ := l.BalanceOf(addr)
 	// 10000 - 5000 (bonded) = 5000
-	if bal.Int64() != 5000 {
-		t.Fatalf("expected 5000 balance, got %d", bal.Int64())
+	wantBal := new(big.Int).Mul(big.NewInt(5000), denom.QuantaPerFRG)
+	if bal.Cmp(wantBal) != 0 {
+		t.Fatalf("expected %s balance, got %s", wantBal, bal)
 	}
 
 	vset, _ := s.ValidatorSet()

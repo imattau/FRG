@@ -15,12 +15,12 @@ import (
 
 type ValidatorEntry struct {
 	PubKey string `json:"pubkey"` // hex-encoded [32]byte
-	Bond   string `json:"bond"`   // decimal string
+	Bond   string `json:"bond"`   // decimal quanta string
 }
 
 type BalanceEntry struct {
 	Account string `json:"account"` // hex-encoded [32]byte
-	Amount  string `json:"amount"`  // decimal string
+	Amount  string `json:"amount"`  // decimal quanta string
 }
 
 type Genesis struct {

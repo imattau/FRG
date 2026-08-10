@@ -7,6 +7,15 @@ FRG has two wallet surfaces:
 
 Both surfaces use the same model: the wallet owns one Ed25519 keypair, queries the node for the current account nonce, signs sender-authorized transactions, and submits the serialized transaction to the node gRPC API.
 
+## Amount Units
+
+The chain stores balances as integer quanta. `1 FRG = 10^18 quanta`, and one
+quantum is the smallest token unit.
+
+The HTTP API treats `amount` and `value` fields as FRG decimal strings. Use
+`amount_quanta` or `value_quanta` only when you need to submit raw integer
+quanta.
+
 ## Security Boundary
 
 `frg-wallet` is a local developer/operator API, not a hosted custody service. Bind it to loopback unless it is behind your own authentication layer:
@@ -84,6 +93,7 @@ curl -X POST http://127.0.0.1:8090/transfer \
 ```
 
 The wallet signs the transfer with the local key. The recipient does not need to countersign.
+For raw quanta, use `{"to":"RECIPIENT_PUBKEY","amount_quanta":"100000000000000000000"}`.
 
 ### Bond
 
@@ -222,8 +232,8 @@ package main
 
 import (
 	"context"
-	"math/big"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/wallet"
 )
 
@@ -243,12 +253,20 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if _, err := w.Transfer(ctx, to, big.NewInt(100)); err != nil {
+	amount, err := denom.ParseFRG("100")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.Transfer(ctx, to, amount); err != nil {
 		panic(err)
 	}
 
 	wasm := []byte{0x00, 0x61, 0x73, 0x6d}
-	if _, err := w.DeployContract(ctx, wasm, big.NewInt(0)); err != nil {
+	zero, err := denom.ParseFRG("0")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.DeployContract(ctx, wasm, zero); err != nil {
 		panic(err)
 	}
 

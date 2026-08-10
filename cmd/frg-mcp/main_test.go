@@ -8,7 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/imattau/frg/core/denom"
 )
+
+func q(frg int64) *big.Int {
+	return new(big.Int).Mul(big.NewInt(frg), denom.QuantaPerFRG)
+}
 
 func TestMCPMessageRoundTrip(t *testing.T) {
 	var out bytes.Buffer
@@ -38,7 +44,7 @@ func TestPolicyDeniesSubmitByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = p.allowSpend("transfer", strings.Repeat("0", 64), big.NewInt(1), false, false)
+	err = p.allowSpend("transfer", strings.Repeat("0", 64), q(1), false, false)
 	if err == nil || !strings.Contains(err.Error(), "allow_submit is false") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +89,7 @@ func TestPolicyRequiresExplicitPositiveLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = p.allowSpend("transfer", strings.Repeat("0", 64), big.NewInt(1), false, false)
+	err = p.allowSpend("transfer", strings.Repeat("0", 64), q(1), false, false)
 	if err == nil || !strings.Contains(err.Error(), "max_transfer is zero") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,11 +102,11 @@ func TestPolicyAllowsBoundedTransferAndTracksDailyLimit(t *testing.T) {
 		DailyLimit:  "15",
 	}
 	var err error
-	p.maxTransfer, err = parsePolicyAmount(p.MaxTransfer)
+	p.maxTransfer, err = parsePolicyAmount(p.MaxTransfer, "", "max_transfer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.dailyLimit, err = parsePolicyAmount(p.DailyLimit)
+	p.dailyLimit, err = parsePolicyAmount(p.DailyLimit, "", "daily_limit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +115,11 @@ func TestPolicyAllowsBoundedTransferAndTracksDailyLimit(t *testing.T) {
 	p.spentToday = big.NewInt(0)
 
 	target := strings.Repeat("a", 64)
-	if err := p.allowSpend("transfer", target, big.NewInt(10), false, false); err != nil {
+	if err := p.allowSpend("transfer", target, q(10), false, false); err != nil {
 		t.Fatal(err)
 	}
-	p.recordSpend(big.NewInt(10))
-	err = p.allowSpend("transfer", target, big.NewInt(6), false, false)
+	p.recordSpend(q(10))
+	err = p.allowSpend("transfer", target, q(6), false, false)
 	if err == nil || !strings.Contains(err.Error(), "daily_limit") {
 		t.Fatalf("unexpected error: %v", err)
 	}

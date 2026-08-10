@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/imattau/frg/core/denom"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
@@ -64,11 +65,11 @@ func printUsage() {
 Commands:
   keygen                         Generate a new keypair and save to frg-cli.key
   balance <pubkey_hex>           Query account balance and nonce
-  prepare --to <pubkey> --amount <n>   Create a sender-signed partial tx
+  prepare --to <pubkey> --amount <frg> Create a sender-signed partial tx
   countersign --tx <partial_hex>       Add receiver sig to partial tx
   submit --tx <full_hex>               Submit fully-signed tx to network
-  send --to <pubkey> --amount <n> Send tokens to a pubkey
-  bond --amount <n>                Bond this key as an active validator
+  send --to <pubkey> --amount <frg>    Send tokens to a pubkey
+  bond --amount <frg>                  Bond this key as an active validator
   unbond                         Start validator unbonding lockup
   finalize-unbond                Release stake after unbonding lockup
   claim-rewards                  Claim validator rewards
@@ -79,7 +80,8 @@ Flags:
   --key <path>       Keypair file (default: frg-cli.key)
   --addr <host:port> FRG node gRPC address (default: localhost:50051)
   --to <pubkey_hex>  Recipient 32-byte Ed25519 pubkey
-  --amount <n>       Transfer amount (quanta)
+  --amount <frg>     Transfer/bond amount in FRG decimal units
+  --amount-quanta <n> Raw integer quanta amount (advanced)
   --chain-id <id>    Chain ID for transaction signatures (default: frg-mainnet-1)
   --tx <hex>         Serialized tx for sign/submit
   --sender <name>    Sender label in tx (default: "cli")
@@ -227,7 +229,10 @@ func balanceCmd(args []string) {
 	}
 
 	fmt.Printf("pubkey:  %s\n", pubkeyHex)
-	fmt.Printf("balance: %s\n", resp.Balance)
+	if bal, ok := new(big.Int).SetString(resp.Balance, 10); ok {
+		fmt.Printf("balance: %s FRG\n", denom.FormatFRG(bal))
+	}
+	fmt.Printf("quanta:  %s\n", resp.Balance)
 	fmt.Printf("nonce:   %d\n", resp.Nonce)
 }
 
@@ -241,7 +246,6 @@ func prepareCmd(args []string) {
 	}
 
 	toHex := getFlag(flags, "--to", "-t")
-	amountStr := getFlag(flags, "--amount", "-m")
 	chainID := getFlag(flags, "--chain-id")
 	if chainID == "" {
 		chainID = tx.DefaultChainID
@@ -255,20 +259,19 @@ func prepareCmd(args []string) {
 		receiverLabel = "cli"
 	}
 
-	if toHex == "" || amountStr == "" {
-		fmt.Fprintln(os.Stderr, "prepare: --to and --amount required")
+	if toHex == "" {
+		fmt.Fprintln(os.Stderr, "prepare: --to required")
+		os.Exit(1)
+	}
+	amount, err := parseCLIAmount(flags, "prepare")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "prepare: %v\n", err)
 		os.Exit(1)
 	}
 
 	receiverBytes, err := hex.DecodeString(toHex)
 	if err != nil || len(receiverBytes) != 32 {
 		fmt.Fprintf(os.Stderr, "prepare: invalid --to pubkey\n")
-		os.Exit(1)
-	}
-
-	amount, ok := new(big.Int).SetString(amountStr, 10)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "prepare: invalid --amount\n")
 		os.Exit(1)
 	}
 
@@ -401,7 +404,6 @@ func sendCmd(args []string) {
 		addr = defaultNodeAddr
 	}
 	toHex := getFlag(flags, "--to", "-t")
-	amountStr := getFlag(flags, "--amount", "-m")
 	chainID := getFlag(flags, "--chain-id")
 	if chainID == "" {
 		chainID = tx.DefaultChainID
@@ -415,8 +417,13 @@ func sendCmd(args []string) {
 		receiverLabel = "cli"
 	}
 
-	if toHex == "" || amountStr == "" {
-		fmt.Fprintln(os.Stderr, "send: --to and --amount required")
+	if toHex == "" {
+		fmt.Fprintln(os.Stderr, "send: --to required")
+		os.Exit(1)
+	}
+	amount, err := parseCLIAmount(flags, "send")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "send: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -429,12 +436,6 @@ func sendCmd(args []string) {
 	receiverBytes, err := hex.DecodeString(toHex)
 	if err != nil || len(receiverBytes) != 32 {
 		fmt.Fprintf(os.Stderr, "send: invalid --to pubkey\n")
-		os.Exit(1)
-	}
-
-	amount, ok := new(big.Int).SetString(amountStr, 10)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "send: invalid --amount\n")
 		os.Exit(1)
 	}
 
@@ -499,18 +500,13 @@ func bondCmd(args []string) {
 	if addr == "" {
 		addr = defaultNodeAddr
 	}
-	amountStr := getFlag(flags, "--amount", "-m")
 	chainID := getFlag(flags, "--chain-id")
 	if chainID == "" {
 		chainID = tx.DefaultChainID
 	}
-	if amountStr == "" {
-		fmt.Fprintln(os.Stderr, "bond: --amount required")
-		os.Exit(1)
-	}
-	amount, ok := new(big.Int).SetString(amountStr, 10)
-	if !ok || amount.Sign() <= 0 {
-		fmt.Fprintln(os.Stderr, "bond: invalid --amount")
+	amount, err := parseCLIAmount(flags, "bond")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bond: %v\n", err)
 		os.Exit(1)
 	}
 	kp, err := resolveKey(keyPath)
@@ -563,7 +559,30 @@ func bondCmd(args []string) {
 		os.Exit(1)
 	}
 	txid, _ := tr.ID()
-	fmt.Printf("ok  validator=%x amount=%s txid=%x\n", kp.PublicKey[:], amount.String(), txid[:])
+	fmt.Printf("ok  validator=%x amount=%s FRG quanta=%s txid=%x\n", kp.PublicKey[:], denom.FormatFRG(amount), amount.String(), txid[:])
+}
+
+func parseCLIAmount(flags map[string]string, command string) (*big.Int, error) {
+	amountRaw := getFlag(flags, "--amount", "-m")
+	quantaRaw := getFlag(flags, "--amount-quanta", "--quanta")
+	if amountRaw != "" && quantaRaw != "" {
+		return nil, fmt.Errorf("use --amount or --amount-quanta, not both")
+	}
+	if amountRaw == "" && quantaRaw == "" {
+		return nil, fmt.Errorf("--amount required")
+	}
+	if quantaRaw != "" {
+		amount, err := denom.ParsePositiveQuanta(quantaRaw)
+		if err != nil {
+			return nil, err
+		}
+		return amount, nil
+	}
+	amount, err := denom.ParsePositiveFRG(amountRaw)
+	if err != nil {
+		return nil, err
+	}
+	return amount, nil
 }
 
 func protocolZeroValueCmd(args []string, name string, typ tx.TxType) {
@@ -682,7 +701,12 @@ func validatorsCmd(args []string) {
 		os.Exit(1)
 	}
 	for i, v := range resp.Validators {
-		fmt.Printf("%d pubkey=%s bond=%s\n", i+1, hex.EncodeToString(v.Pubkey), v.Bond)
+		bond := v.Bond
+		bondFRG := "0"
+		if q, ok := new(big.Int).SetString(v.Bond, 10); ok {
+			bondFRG = denom.FormatFRG(q)
+		}
+		fmt.Printf("%d pubkey=%s bond=%s FRG quanta=%s\n", i+1, hex.EncodeToString(v.Pubkey), bondFRG, bond)
 	}
 }
 

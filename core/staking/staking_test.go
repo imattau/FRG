@@ -6,11 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	bolt "go.etcd.io/bbolt"
+	"github.com/imattau/frg/core/denom"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/staking"
+	bolt "go.etcd.io/bbolt"
 )
 
 func openStore(t *testing.T) (*staking.Store, *ledger.Ledger) {
@@ -35,9 +36,13 @@ func openStore(t *testing.T) (*staking.Store, *ledger.Ledger) {
 	return s, l
 }
 
-func seedValidator(t *testing.T, l *ledger.Ledger, pub [32]byte, quanta int64) {
+func q(frg int64) *big.Int {
+	return new(big.Int).Mul(big.NewInt(frg), denom.QuantaPerFRG)
+}
+
+func seedValidator(t *testing.T, l *ledger.Ledger, pub [32]byte, frg int64) {
 	t.Helper()
-	if err := l.Seed(pub, big.NewInt(quanta)); err != nil {
+	if err := l.Seed(pub, q(frg)); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 }
@@ -79,17 +84,17 @@ func TestBondValid(t *testing.T) {
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
 
-	if err := s.Bond(kp.PublicKey, big.NewInt(2000), 1); err != nil {
+	if err := s.Bond(kp.PublicKey, q(2000), 1); err != nil {
 		t.Fatalf("Bond: %v", err)
 	}
 
 	bal, _ := l.BalanceOf(kp.PublicKey)
-	if bal.Cmp(big.NewInt(3000)) != 0 {
+	if bal.Cmp(q(3000)) != 0 {
 		t.Fatalf("validator balance: got %v want 3000", bal)
 	}
 	escrow := escrowAccount(kp.PublicKey)
 	escrowBal, _ := l.BalanceOf(escrow)
-	if escrowBal.Cmp(big.NewInt(2000)) != 0 {
+	if escrowBal.Cmp(q(2000)) != 0 {
 		t.Fatalf("escrow balance: got %v want 2000", escrowBal)
 	}
 	vs, _ := s.ValidatorSet()
@@ -106,7 +111,7 @@ func TestBondBelowMinimum(t *testing.T) {
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
 
-	err := s.Bond(kp.PublicKey, big.NewInt(999), 1)
+	err := s.Bond(kp.PublicKey, q(999), 1)
 	assertCode(t, err, rgerrors.ErrBondBelowMinimum)
 }
 
@@ -114,9 +119,9 @@ func TestBondAlreadyBonded(t *testing.T) {
 	s, l := openStore(t)
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
-	_ = s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kp.PublicKey, q(1000), 1)
 
-	err := s.Bond(kp.PublicKey, big.NewInt(1000), 2)
+	err := s.Bond(kp.PublicKey, q(1000), 2)
 	assertCode(t, err, rgerrors.ErrAlreadyBonded)
 }
 
@@ -125,7 +130,7 @@ func TestBondInsufficientFunds(t *testing.T) {
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 500)
 
-	err := s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	err := s.Bond(kp.PublicKey, q(1000), 1)
 	assertCode(t, err, rgerrors.ErrInsufficientFunds)
 }
 
@@ -133,7 +138,7 @@ func TestUnbondValid(t *testing.T) {
 	s, l := openStore(t)
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
-	_ = s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kp.PublicKey, q(1000), 1)
 
 	if err := s.Unbond(kp.PublicKey, 10); err != nil {
 		t.Fatalf("Unbond: %v", err)
@@ -156,7 +161,7 @@ func TestUnbondPending(t *testing.T) {
 	s, l := openStore(t)
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
-	_ = s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kp.PublicKey, q(1000), 1)
 	_ = s.Unbond(kp.PublicKey, 10)
 
 	err := s.Unbond(kp.PublicKey, 11)
@@ -167,19 +172,19 @@ func TestFinalizeBeforeLockup(t *testing.T) {
 	s, l := openStore(t)
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
-	_ = s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kp.PublicKey, q(1000), 1)
 	_ = s.Unbond(kp.PublicKey, 100)
 
 	if err := s.Finalize(kp.PublicKey, 1099); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	bal, _ := l.BalanceOf(kp.PublicKey)
-	if bal.Cmp(big.NewInt(4000)) != 0 {
+	if bal.Cmp(q(4000)) != 0 {
 		t.Fatalf("balance: got %v want 4000", bal)
 	}
 	escrow := escrowAccount(kp.PublicKey)
 	escrowBal, _ := l.BalanceOf(escrow)
-	if escrowBal.Cmp(big.NewInt(1000)) != 0 {
+	if escrowBal.Cmp(q(1000)) != 0 {
 		t.Fatalf("escrow balance: got %v want 1000", escrowBal)
 	}
 }
@@ -188,14 +193,14 @@ func TestFinalizeAfterLockup(t *testing.T) {
 	s, l := openStore(t)
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
-	_ = s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kp.PublicKey, q(1000), 1)
 	_ = s.Unbond(kp.PublicKey, 100)
 
 	if err := s.Finalize(kp.PublicKey, 1100); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	bal, _ := l.BalanceOf(kp.PublicKey)
-	if bal.Cmp(big.NewInt(5000)) != 0 {
+	if bal.Cmp(q(5000)) != 0 {
 		t.Fatalf("balance: got %v want 5000", bal)
 	}
 	escrow := escrowAccount(kp.PublicKey)
@@ -213,7 +218,7 @@ func TestSlashBonded(t *testing.T) {
 	s, l := openStore(t)
 	kp, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kp.PublicKey, 5000)
-	_ = s.Bond(kp.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kp.PublicKey, q(1000), 1)
 
 	proof := staking.EquivocationProof{
 		ValidatorPubKey: kp.PublicKey,
@@ -226,7 +231,7 @@ func TestSlashBonded(t *testing.T) {
 		t.Fatalf("Slash: %v", err)
 	}
 	bal, _ := l.BalanceOf(kp.PublicKey)
-	if bal.Cmp(big.NewInt(4000)) != 0 {
+	if bal.Cmp(q(4000)) != 0 {
 		t.Fatalf("balance: got %v want 4000", bal)
 	}
 	escrow := escrowAccount(kp.PublicKey)
@@ -254,8 +259,8 @@ func TestValidatorSet(t *testing.T) {
 	kpB, _ := keys.GenerateKeypair()
 	seedValidator(t, l, kpA.PublicKey, 5000)
 	seedValidator(t, l, kpB.PublicKey, 5000)
-	_ = s.Bond(kpA.PublicKey, big.NewInt(1000), 1)
-	_ = s.Bond(kpB.PublicKey, big.NewInt(1000), 1)
+	_ = s.Bond(kpA.PublicKey, q(1000), 1)
+	_ = s.Bond(kpB.PublicKey, q(1000), 1)
 	_ = s.Unbond(kpB.PublicKey, 10)
 
 	vs, _ := s.ValidatorSet()
@@ -275,9 +280,9 @@ func TestBondedAmounts(t *testing.T) {
 	seedValidator(t, l, kpA.PublicKey, 5000)
 	seedValidator(t, l, kpB.PublicKey, 5000)
 	seedValidator(t, l, kpC.PublicKey, 5000)
-	_ = s.Bond(kpA.PublicKey, big.NewInt(1000), 1)
-	_ = s.Bond(kpB.PublicKey, big.NewInt(2000), 1)
-	_ = s.Bond(kpC.PublicKey, big.NewInt(3000), 1)
+	_ = s.Bond(kpA.PublicKey, q(1000), 1)
+	_ = s.Bond(kpB.PublicKey, q(2000), 1)
+	_ = s.Bond(kpC.PublicKey, q(3000), 1)
 	_ = s.Unbond(kpC.PublicKey, 10)
 
 	validators, amounts, err := s.BondedAmounts()
@@ -291,7 +296,7 @@ func TestBondedAmounts(t *testing.T) {
 	for _, a := range amounts {
 		total.Add(total, a)
 	}
-	if total.Cmp(big.NewInt(3000)) != 0 {
+	if total.Cmp(q(3000)) != 0 {
 		t.Fatalf("total bonded: got %v want 3000", total)
 	}
 }
@@ -305,11 +310,11 @@ func TestPersistence(t *testing.T) {
 
 	{
 		l, _ := ledger.Open(ledgerPath)
-		if err := l.Seed(kp.PublicKey, big.NewInt(5000)); err != nil {
+		if err := l.Seed(kp.PublicKey, q(5000)); err != nil {
 			t.Fatal(err)
 		}
 		s, _ := staking.Open(stakingPath, l)
-		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 1); err != nil {
+		if err := s.Bond(kp.PublicKey, q(1000), 1); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.Close(); err != nil {

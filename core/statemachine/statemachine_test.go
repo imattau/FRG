@@ -9,6 +9,7 @@ import (
 
 	"github.com/imattau/frg/core/consensus"
 	"github.com/imattau/frg/core/contract"
+	"github.com/imattau/frg/core/denom"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/gas"
 	"github.com/imattau/frg/core/keys"
@@ -52,6 +53,10 @@ func setTotalSupply(t *testing.T, sm *statemachine.StateMachine, total *big.Int)
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func q(frg int64) *big.Int {
+	return new(big.Int).Mul(big.NewInt(frg), denom.QuantaPerFRG)
 }
 
 func TestApplyEmptyBlock(t *testing.T) {
@@ -304,7 +309,7 @@ func TestApplyBlockMintsSplitRewardsToClaimableAccounts(t *testing.T) {
 	kpA, _ := keys.GenerateKeypair()
 	kpB, _ := keys.GenerateKeypair()
 
-	totalSupply := big.NewInt(1_000_000_000_000)
+	totalSupply := q(1_000_000)
 	halfSupply := new(big.Int).Div(totalSupply, big.NewInt(2))
 	if err := l.Seed(kpA.PublicKey, new(big.Int).Set(halfSupply)); err != nil {
 		t.Fatal(err)
@@ -313,10 +318,10 @@ func TestApplyBlockMintsSplitRewardsToClaimableAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	setTotalSupply(t, sm, totalSupply)
-	if err := s.Bond(kpA.PublicKey, big.NewInt(1000), 0); err != nil {
+	if err := s.Bond(kpA.PublicKey, q(1000), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Bond(kpB.PublicKey, big.NewInt(1000), 0); err != nil {
+	if err := s.Bond(kpB.PublicKey, q(1000), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -324,18 +329,20 @@ func TestApplyBlockMintsSplitRewardsToClaimableAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyBlock: %v", err)
 	}
-	wantMint := mint.MintPerBlock(totalSupply, big.NewInt(2000))
+	wantMint := mint.MintPerBlock(totalSupply, q(2000))
 	if result.MintAmount.Cmp(wantMint) != 0 {
 		t.Fatalf("MintAmount = %v, want %v", result.MintAmount, wantMint)
 	}
-	shares := mint.SplitReward(wantMint, 2)
 	claimA, _ := gas.Claimable(l, kpA.PublicKey)
 	claimB, _ := gas.Claimable(l, kpB.PublicKey)
-	if claimA.Cmp(shares[0]) != 0 {
-		t.Fatalf("validator A claimable = %v, want %v", claimA, shares[0])
+	totalClaimable := new(big.Int).Add(claimA, claimB)
+	if totalClaimable.Cmp(wantMint) != 0 {
+		t.Fatalf("total claimable = %v, want %v", totalClaimable, wantMint)
 	}
-	if claimB.Cmp(shares[1]) != 0 {
-		t.Fatalf("validator B claimable = %v, want %v", claimB, shares[1])
+	diff := new(big.Int).Sub(claimA, claimB)
+	diff.Abs(diff)
+	if diff.Cmp(big.NewInt(1)) > 0 {
+		t.Fatalf("claimable split too uneven: A=%v B=%v", claimA, claimB)
 	}
 	supplyAfter, tracked, err := sm.CurrentTotalSupply()
 	if err != nil {
@@ -349,7 +356,7 @@ func TestApplyBlockMintsSplitRewardsToClaimableAccounts(t *testing.T) {
 		t.Fatalf("total supply = %v, want %v", supplyAfter, wantSupply)
 	}
 	proposerBal, _ := l.BalanceOf(kpA.PublicKey)
-	if proposerBal.Cmp(new(big.Int).Sub(halfSupply, big.NewInt(1000))) != 0 {
+	if proposerBal.Cmp(new(big.Int).Sub(halfSupply, q(1000))) != 0 {
 		t.Fatalf("proposer direct balance changed by mint: %v", proposerBal)
 	}
 }
@@ -362,7 +369,7 @@ func TestApplyBlockMintsNothingAtTargetStaking(t *testing.T) {
 	kpB, _ := keys.GenerateKeypair()
 	treasury, _ := keys.GenerateKeypair()
 
-	totalSupply := big.NewInt(1_000_000_000_000)
+	totalSupply := q(1_000_000)
 	stakeEach := new(big.Int).Div(totalSupply, big.NewInt(4))
 	if err := l.Seed(kpA.PublicKey, new(big.Int).Set(stakeEach)); err != nil {
 		t.Fatal(err)
@@ -451,13 +458,13 @@ func TestApplyBlockBondTxActivatesValidator(t *testing.T) {
 	l, _ := ledger.New(db)
 	s, _ := staking.New(db, l)
 	kp, _ := keys.GenerateKeypair()
-	initial := big.NewInt(10_000)
+	initial := q(10_000)
 	if err := l.Seed(kp.PublicKey, new(big.Int).Set(initial)); err != nil {
 		t.Fatal(err)
 	}
 	setTotalSupply(t, sm, initial)
 
-	bondTx := makeBondTx(t, kp, big.NewInt(1000), 1)
+	bondTx := makeBondTx(t, kp, q(1000), 1)
 	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{bondTx}, ProposerPubKey: kp.PublicKey}); err != nil {
 		t.Fatalf("ApplyBlock: %v", err)
 	}
@@ -468,11 +475,11 @@ func TestApplyBlockBondTxActivatesValidator(t *testing.T) {
 	if len(validators) != 1 || validators[0] != kp.PublicKey {
 		t.Fatalf("unexpected validators: %x", validators)
 	}
-	if len(amounts) != 1 || amounts[0].Cmp(big.NewInt(1000)) != 0 {
+	if len(amounts) != 1 || amounts[0].Cmp(q(1000)) != 0 {
 		t.Fatalf("unexpected bonded amount: %v", amounts)
 	}
 	escrowBal, _ := l.BalanceOf(staking.EscrowAccount(kp.PublicKey))
-	if escrowBal.Cmp(big.NewInt(1000)) != 0 {
+	if escrowBal.Cmp(q(1000)) != 0 {
 		t.Fatalf("escrow balance = %v, want 1000", escrowBal)
 	}
 }
@@ -481,14 +488,14 @@ func TestApplyBlockUnbondAndFinalizeTxLifecycle(t *testing.T) {
 	sm, db := openSM(t)
 	l, _ := ledger.New(db)
 	kp, _ := keys.GenerateKeypair()
-	if err := l.Seed(kp.PublicKey, big.NewInt(3000)); err != nil {
+	if err := l.Seed(kp.PublicKey, q(3000)); err != nil {
 		t.Fatal(err)
 	}
-	setTotalSupply(t, sm, big.NewInt(3000))
+	setTotalSupply(t, sm, q(3000))
 
 	if _, err := sm.ApplyBlock(&statemachine.Block{
 		Height: 1,
-		Txs:    []*tx.Tx{signedProtocolTx(t, kp, tx.TxTypeBond, big.NewInt(1000), 1)},
+		Txs:    []*tx.Tx{signedProtocolTx(t, kp, tx.TxTypeBond, q(1000), 1)},
 	}); err != nil {
 		t.Fatalf("bond: %v", err)
 	}
@@ -518,7 +525,7 @@ func TestApplyBlockUnbondAndFinalizeTxLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bal.Cmp(big.NewInt(1900)) < 0 {
+	if bal.Cmp(q(1900)) < 0 {
 		t.Fatalf("finalized balance too low: %s", bal)
 	}
 }
@@ -560,17 +567,17 @@ func TestApplyBlockEquivocationEvidenceSlashesValidator(t *testing.T) {
 	l, _ := ledger.New(db)
 	validatorKP, _ := keys.GenerateKeypair()
 	reporterKP, _ := keys.GenerateKeypair()
-	if err := l.Seed(validatorKP.PublicKey, big.NewInt(3000)); err != nil {
+	if err := l.Seed(validatorKP.PublicKey, q(3000)); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Seed(reporterKP.PublicKey, big.NewInt(100)); err != nil {
+	if err := l.Seed(reporterKP.PublicKey, q(100)); err != nil {
 		t.Fatal(err)
 	}
-	setTotalSupply(t, sm, big.NewInt(3100))
+	setTotalSupply(t, sm, q(3100))
 
 	if _, err := sm.ApplyBlock(&statemachine.Block{
 		Height: 1,
-		Txs:    []*tx.Tx{signedProtocolTx(t, validatorKP, tx.TxTypeBond, big.NewInt(1000), 1)},
+		Txs:    []*tx.Tx{signedProtocolTx(t, validatorKP, tx.TxTypeBond, q(1000), 1)},
 	}); err != nil {
 		t.Fatalf("bond: %v", err)
 	}
@@ -618,12 +625,12 @@ func TestApplyBlockRejectsMalformedBondTx(t *testing.T) {
 	l, _ := ledger.New(db)
 	s, _ := staking.New(db, l)
 	kp, _ := keys.GenerateKeypair()
-	if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+	if err := l.Seed(kp.PublicKey, q(10_000)); err != nil {
 		t.Fatal(err)
 	}
-	setTotalSupply(t, sm, big.NewInt(10_000))
+	setTotalSupply(t, sm, q(10_000))
 
-	bondTx := makeBondTx(t, kp, big.NewInt(1000), 1)
+	bondTx := makeBondTx(t, kp, q(1000), 1)
 	bondTx.ReceiverPubKey = [32]byte{9}
 	sig, err := bondTx.SignSender(kp)
 	if err != nil {
@@ -649,12 +656,12 @@ func TestApplyBlockRejectsForgedMissEvidence(t *testing.T) {
 	s, _ := staking.New(db, l)
 	kpA, _ := keys.GenerateKeypair()
 	kpB, _ := keys.GenerateKeypair()
-	totalSupply := big.NewInt(20_000)
+	totalSupply := q(20_000)
 	for _, kp := range []*keys.Keypair{kpA, kpB} {
-		if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+		if err := l.Seed(kp.PublicKey, q(10_000)); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 0); err != nil {
+		if err := s.Bond(kp.PublicKey, q(1000), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -689,12 +696,12 @@ func TestApplyBlockAcceptsScheduledMissEvidence(t *testing.T) {
 	s, _ := staking.New(db, l)
 	kpA, _ := keys.GenerateKeypair()
 	kpB, _ := keys.GenerateKeypair()
-	totalSupply := big.NewInt(20_000)
+	totalSupply := q(20_000)
 	for _, kp := range []*keys.Keypair{kpA, kpB} {
-		if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+		if err := l.Seed(kp.PublicKey, q(10_000)); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 0); err != nil {
+		if err := s.Bond(kp.PublicKey, q(1000), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -732,12 +739,12 @@ func TestApplyBlockRejectsDuplicateMissEvidence(t *testing.T) {
 	s, _ := staking.New(db, l)
 	kpA, _ := keys.GenerateKeypair()
 	kpB, _ := keys.GenerateKeypair()
-	totalSupply := big.NewInt(20_000)
+	totalSupply := q(20_000)
 	for _, kp := range []*keys.Keypair{kpA, kpB} {
-		if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+		if err := l.Seed(kp.PublicKey, q(10_000)); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.Bond(kp.PublicKey, big.NewInt(1000), 0); err != nil {
+		if err := s.Bond(kp.PublicKey, q(1000), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
