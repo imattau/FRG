@@ -155,6 +155,17 @@ go build -o frg-wallet ./cmd/frg-wallet
 
 It exposes local HTTP endpoints for pubkey, account/balance, transfers, bonding, contract deploy/call/state queries, faucet requests, node status, and validators. The reusable Go package is available at `github.com/imattau/frg/wallet`. See [docs/wallet-api.md](docs/wallet-api.md).
 
+### AI Agent MCP
+
+Build `frg-mcp` to let AI agents inspect FRG state and, with an explicit local policy, transact autonomously:
+
+```bash
+go build -o frg-mcp ./cmd/frg-mcp
+./frg-mcp --create-key --key frg-agent.key --node 127.0.0.1:50051
+```
+
+See [docs/mcp.md](docs/mcp.md).
+
 ### Validator Docker Quickstart
 
 For a containerized validator setup with mounted genesis/key data and environment-based config generation, see [docs/operator-quickstart.md](docs/operator-quickstart.md).
