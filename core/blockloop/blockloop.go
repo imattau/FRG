@@ -1,6 +1,7 @@
 package blockloop
 
 import (
+	"container/list"
 	"context"
 	"sync"
 
@@ -11,21 +12,35 @@ import (
 )
 
 const (
-	defaultCap = 4 * 65536 // 4 × T_MAX
+	defaultCap = 4 * 65536
 	TMax       = 65536
 )
 
+// mempool stores pending transactions in FIFO order (queue) with O(1)
+// membership testing and O(1) removal by id (index maps a tx id to its
+// list.Element) -- a plain slice + map[id]struct{} (the previous
+// approach) made membership O(1) too, but removeCommitted (below) had to
+// linearly scan the whole slice, re-hashing every entry's ID(), to find
+// each committed tx to remove. At up to defaultCap (262144) entries and
+// up to TMax (65536) removals per committed block, that's up to ~8.6
+// billion ID() calls in the worst case -- comfortably enough to blow
+// through consensus's propose/prevote/precommit timeouts every round,
+// livelocking block production entirely under sustained load. Confirmed
+// live: a real devnet spun at ~82% CPU with block height completely
+// frozen once the mempool filled to its cap under a sustained ~4700 tx/s
+// submission rate.
 type mempool struct {
 	mu    sync.Mutex
-	queue []*tx.Tx
-	seen  map[[32]byte]struct{}
+	queue *list.List
+	index map[[32]byte]*list.Element
 	cap   int
 }
 
 func newMempool(cap int) *mempool {
 	return &mempool{
-		seen: make(map[[32]byte]struct{}),
-		cap:  cap,
+		queue: list.New(),
+		index: make(map[[32]byte]*list.Element),
+		cap:   cap,
 	}
 }
 
@@ -77,40 +92,44 @@ func (bl *BlockLoop) Enqueue(t *tx.Tx) {
 		return
 	}
 
-	if _, ok := bl.mempool.seen[id]; ok {
+	if _, ok := bl.mempool.index[id]; ok {
 		return
 	}
 
-	if len(bl.mempool.queue) >= bl.mempool.cap {
-		// Drop oldest
-		oldest := bl.mempool.queue[0]
-		oldestID, _ := oldest.ID()
-		delete(bl.mempool.seen, oldestID)
-		bl.mempool.queue = bl.mempool.queue[1:]
+	if bl.mempool.queue.Len() >= bl.mempool.cap {
+		// Drop oldest.
+		if front := bl.mempool.queue.Front(); front != nil {
+			oldest := front.Value.(*tx.Tx)
+			oldestID, _ := oldest.ID()
+			delete(bl.mempool.index, oldestID)
+			bl.mempool.queue.Remove(front)
+		}
 	}
 
-	bl.mempool.queue = append(bl.mempool.queue, t)
-	bl.mempool.seen[id] = struct{}{}
+	elem := bl.mempool.queue.PushBack(t)
+	bl.mempool.index[id] = elem
 }
 
 func (bl *BlockLoop) Len() int {
 	bl.mempool.mu.Lock()
 	defer bl.mempool.mu.Unlock()
-	return len(bl.mempool.queue)
+	return bl.mempool.queue.Len()
 }
 
 func (bl *BlockLoop) Snapshot() []*tx.Tx {
 	bl.mempool.mu.Lock()
 	defer bl.mempool.mu.Unlock()
-	out := make([]*tx.Tx, len(bl.mempool.queue))
-	copy(out, bl.mempool.queue)
+	out := make([]*tx.Tx, 0, bl.mempool.queue.Len())
+	for e := bl.mempool.queue.Front(); e != nil; e = e.Next() {
+		out = append(out, e.Value.(*tx.Tx))
+	}
 	return out
 }
 
 func (bl *BlockLoop) Has(id [32]byte) bool {
 	bl.mempool.mu.Lock()
 	defer bl.mempool.mu.Unlock()
-	_, ok := bl.mempool.seen[id]
+	_, ok := bl.mempool.index[id]
 	return ok
 }
 
@@ -147,12 +166,14 @@ func (bl *BlockLoop) ProposeForState(height uint64, round uint32, prevAttest con
 
 func (bl *BlockLoop) propose(height uint64, round uint32, prevAttest consensus.AttestationSet, prevRoot [32]byte) (*consensus.BlockProposal, error) {
 	bl.mempool.mu.Lock()
-	count := len(bl.mempool.queue)
+	count := bl.mempool.queue.Len()
 	if count > TMax {
 		count = TMax
 	}
-	txs := make([]*tx.Tx, count)
-	copy(txs, bl.mempool.queue[:count])
+	txs := make([]*tx.Tx, 0, count)
+	for e := bl.mempool.queue.Front(); e != nil && len(txs) < count; e = e.Next() {
+		txs = append(txs, e.Value.(*tx.Tx))
+	}
 	// Note: We don't dequeue here. OnCommit will cleanup.
 	// Actually the design says "dequeue up to T_MAX txs".
 	// But OnCommit removes committed txs.
@@ -198,17 +219,9 @@ func (bl *BlockLoop) removeCommitted(txs []*tx.Tx) {
 		if err != nil {
 			continue
 		}
-		if _, ok := bl.mempool.seen[id]; ok {
-			delete(bl.mempool.seen, id)
-			// Remove from queue. This is O(N) but mempool is small (256k).
-			// A better way would be a linked list or just filtering the slice.
-			for i, qt := range bl.mempool.queue {
-				qid, _ := qt.ID()
-				if qid == id {
-					bl.mempool.queue = append(bl.mempool.queue[:i], bl.mempool.queue[i+1:]...)
-					break
-				}
-			}
+		if elem, ok := bl.mempool.index[id]; ok {
+			bl.mempool.queue.Remove(elem)
+			delete(bl.mempool.index, id)
 		}
 	}
 }
