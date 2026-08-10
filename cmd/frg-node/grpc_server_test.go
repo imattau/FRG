@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/imattau/frg/core/keys"
+	"github.com/imattau/frg/core/statemachine"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
 	"google.golang.org/grpc"
@@ -19,11 +20,13 @@ import (
 )
 
 type fakeNode struct {
-	txCh          chan *tx.Tx
-	batchCh       chan []*tx.Tx
-	blockCh       chan []byte
-	status        *frgpb.StatusResponse
-	contractState *frgpb.ContractStateResponse
+	txCh            chan *tx.Tx
+	batchCh         chan []*tx.Tx
+	blockCh         chan []byte
+	status          *frgpb.StatusResponse
+	contractState   *frgpb.ContractStateResponse
+	telemetry       *frgpb.BlockTelemetryResponse
+	telemetryHeight uint64
 }
 
 func (f *fakeNode) BroadcastTx(t *tx.Tx) error {
@@ -67,6 +70,14 @@ func (f *fakeNode) ListValidators() (*frgpb.ValidatorList, error) {
 
 func (f *fakeNode) ListMempool() (*frgpb.MempoolList, error) {
 	return &frgpb.MempoolList{}, nil
+}
+
+func (f *fakeNode) GetBlockTelemetry(height uint64) (*frgpb.BlockTelemetryResponse, error) {
+	f.telemetryHeight = height
+	if f.telemetry != nil {
+		return f.telemetry, nil
+	}
+	return &frgpb.BlockTelemetryResponse{Height: height}, nil
 }
 
 type nodeTestAPI interface {
@@ -321,5 +332,63 @@ func TestNodeGRPCGetContractState(t *testing.T) {
 	}
 	if !resp.Exists || !resp.Found || len(resp.Value) != 1 || resp.Value[0] != 9 {
 		t.Fatalf("unexpected contract state response: %+v", resp)
+	}
+}
+
+func TestNodeGRPCGetBlockTelemetry(t *testing.T) {
+	node := &fakeNode{
+		txCh:    make(chan *tx.Tx, 1),
+		batchCh: make(chan []*tx.Tx, 1),
+		blockCh: make(chan []byte, 1),
+		telemetry: &frgpb.BlockTelemetryResponse{
+			Height:     9,
+			TxCount:    2,
+			TotalValue: "300",
+			Levels: []*frgpb.RGLevelTelemetry{
+				{Level: 0, Scale: 1, NodeCount: 2},
+			},
+		},
+	}
+	conn, cleanup := newGRPCBufconnServer(t, node)
+	defer cleanup()
+
+	client := frgpb.NewFRGClient(conn)
+	resp, err := client.GetBlockTelemetry(context.Background(), &frgpb.BlockTelemetryRequest{Height: 9}, grpc.CallContentSubtype("frg-json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.telemetryHeight != 9 {
+		t.Fatalf("height passed to node = %d, want 9", node.telemetryHeight)
+	}
+	if resp.Height != 9 || resp.TxCount != 2 || len(resp.Levels) != 1 {
+		t.Fatalf("unexpected telemetry response: %+v", resp)
+	}
+}
+
+func TestBlockTelemetryBuildsRGSummary(t *testing.T) {
+	senderKP := keys.NewKeypairFromSeed([32]byte{1})
+	receiverKP := keys.NewKeypairFromSeed([32]byte{2})
+	block := &statemachine.Block{
+		Height: 7,
+		Txs: []*tx.Tx{
+			signedTransferTx(t, senderKP, receiverKP, 1, 100),
+			signedTransferTx(t, senderKP, receiverKP, 2, 200),
+		},
+	}
+	block.StateRoot[0] = 0xaa
+	block.ProposerPubKey[0] = 0xbb
+
+	resp, err := blockTelemetry(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Height != 7 || resp.TxCount != 2 || resp.TotalValue != "300" || resp.MeanValue != "150" {
+		t.Fatalf("unexpected telemetry totals: %+v", resp)
+	}
+	if len(resp.TxTypes) != 1 || resp.TxTypes[0].Name != "transfer" || resp.TxTypes[0].Count != 2 {
+		t.Fatalf("unexpected tx type counts: %+v", resp.TxTypes)
+	}
+	if len(resp.Levels) == 0 || resp.Levels[0].NodeCount != 2 || len(resp.Levels[0].SignatureCounts) == 0 {
+		t.Fatalf("missing RG level telemetry: %+v", resp.Levels)
 	}
 }

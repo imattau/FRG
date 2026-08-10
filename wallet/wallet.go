@@ -153,6 +153,10 @@ func (w *Wallet) Mempool(ctx context.Context) (*frgpb.MempoolList, error) {
 	return w.client.ListMempool(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
 }
 
+func (w *Wallet) BlockTelemetry(ctx context.Context, height uint64) (*frgpb.BlockTelemetryResponse, error) {
+	return w.client.GetBlockTelemetry(ctx, &frgpb.BlockTelemetryRequest{Height: height}, grpc.CallContentSubtype("frg-json"))
+}
+
 func (w *Wallet) ContractState(ctx context.Context, contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error) {
 	return w.client.GetContractState(ctx, &frgpb.ContractStateRequest{
 		ContractAddress: contractAddr[:],

@@ -56,6 +56,7 @@ Read tools:
 - `frg_get_account`
 - `frg_list_validators`
 - `frg_list_mempool`
+- `frg_get_block_telemetry`
 - `frg_operator_health`
 - `frg_operator_readiness`
 - `frg_get_contract_state`
@@ -89,6 +90,18 @@ Use `frg_operator_readiness` to check whether the MCP wallet or a supplied pubke
 It checks account funding, bonded status, minimum bond, validator set presence, peer count, mempool length, consensus phase, and whether the node is running in `grpc_only` mode.
 
 Use `frg_operator_health` for basic node health. If the MCP server is started with `--metrics-url http://127.0.0.1:9090`, it also checks `/readyz`.
+
+Use `frg_get_block_telemetry` to inspect the FRG RG structure for a committed block:
+
+```json
+{
+  "height": "0"
+}
+```
+
+Height `0` or an empty height means the latest committed block. The response includes transaction counts, value totals, transaction type counts, per-level signature histograms, contract density, volatility regions, and stagnant regions. This gives agents and operators direct access to the information FRG already derives while building state roots.
+
+Current limitation: historical block telemetry is reconstructed from persisted transactions. If the block included contract deploys or calls, the response warns that historical contract-state RG nodes are not included yet. Persisting exact retained-tree summaries at block commit time is the next step if operators need full historical contract-state density without recomputation or approximation.
 
 ## Agent Work Contracts
 

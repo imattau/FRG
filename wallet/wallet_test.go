@@ -16,12 +16,14 @@ import (
 )
 
 type fakeClient struct {
-	account       *frgpb.AccountResponse
-	contractState *frgpb.ContractStateResponse
-	status        *frgpb.StatusResponse
-	vals          *frgpb.ValidatorList
-	mempool       *frgpb.MempoolList
-	tx            *tx.Tx
+	account         *frgpb.AccountResponse
+	contractState   *frgpb.ContractStateResponse
+	status          *frgpb.StatusResponse
+	vals            *frgpb.ValidatorList
+	mempool         *frgpb.MempoolList
+	telemetry       *frgpb.BlockTelemetryResponse
+	telemetryHeight uint64
+	tx              *tx.Tx
 }
 
 func (f *fakeClient) SubmitTx(_ context.Context, in *frgpb.RawBytes, _ ...grpc.CallOption) (*frgpb.SubmitResponse, error) {
@@ -77,6 +79,14 @@ func (f *fakeClient) ListMempool(context.Context, *frgpb.Empty, ...grpc.CallOpti
 		return &frgpb.MempoolList{}, nil
 	}
 	return f.mempool, nil
+}
+
+func (f *fakeClient) GetBlockTelemetry(_ context.Context, req *frgpb.BlockTelemetryRequest, _ ...grpc.CallOption) (*frgpb.BlockTelemetryResponse, error) {
+	f.telemetryHeight = req.Height
+	if f.telemetry == nil {
+		return &frgpb.BlockTelemetryResponse{Height: req.Height}, nil
+	}
+	return f.telemetry, nil
 }
 
 func TestSaveSeedAndLoadKeypair(t *testing.T) {
@@ -288,6 +298,28 @@ func TestContractStateQueriesNode(t *testing.T) {
 	}
 	if !resp.Exists || !resp.Found || string(resp.Key) != "count" || len(resp.Value) != 1 || resp.Value[0] != 7 {
 		t.Fatalf("unexpected contract state response: %+v", resp)
+	}
+}
+
+func TestBlockTelemetryQueriesNode(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeClient{telemetry: &frgpb.BlockTelemetryResponse{Height: 12, TxCount: 3}}
+	w, err := New(kp, fc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := w.BlockTelemetry(context.Background(), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.telemetryHeight != 12 {
+		t.Fatalf("height = %d, want 12", fc.telemetryHeight)
+	}
+	if resp.Height != 12 || resp.TxCount != 3 {
+		t.Fatalf("unexpected telemetry response: %+v", resp)
 	}
 }
 

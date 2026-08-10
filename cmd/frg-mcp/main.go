@@ -281,6 +281,9 @@ func (s *mcpServer) tools() []tool {
 		readTool("frg_get_account", "Return account balance and nonce. Defaults to this agent wallet.", objectSchema(map[string]any{"pubkey": stringSchema("32-byte public key hex")}, nil)),
 		readTool("frg_list_validators", "List active bonded validators.", objectSchema(nil, nil)),
 		readTool("frg_list_mempool", "List pending mempool transaction IDs, sender labels, and nonces.", objectSchema(nil, nil)),
+		readTool("frg_get_block_telemetry", "Return retained RG/economic telemetry for a committed block; height defaults to latest.", objectSchema(map[string]any{
+			"height": stringSchema("optional block height; 0 or empty means latest committed block"),
+		}, nil)),
 		readTool("frg_operator_health", "Check gRPC status and optional metrics /readyz health.", objectSchema(nil, nil)),
 		readTool("frg_operator_readiness", "Diagnose whether this wallet/node appears ready to operate as a validator.", objectSchema(map[string]any{
 			"validator_pubkey": stringSchema("optional validator pubkey hex; defaults to this MCP wallet"),
@@ -386,6 +389,22 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 			return nil, err
 		}
 		return jsonTool(formatMempool(resp))
+	case "frg_get_block_telemetry":
+		var in struct {
+			Height string `json:"height"`
+		}
+		if err := decodeArgs(args, &in); err != nil {
+			return nil, err
+		}
+		height, err := parseOptionalUint64(in.Height, "height")
+		if err != nil {
+			return nil, err
+		}
+		resp, err := s.w.BlockTelemetry(ctx, height)
+		if err != nil {
+			return nil, err
+		}
+		return jsonTool(formatBlockTelemetry(resp))
 	case "frg_operator_health":
 		resp, err := s.operatorHealth(ctx)
 		if err != nil {
@@ -672,6 +691,17 @@ func parseOptionalAmount(raw string) (*big.Int, error) {
 		return nil, fmt.Errorf("value must be a non-negative base-10 integer")
 	}
 	return amount, nil
+}
+
+func parseOptionalUint64(raw, name string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	value, ok := new(big.Int).SetString(raw, 10)
+	if !ok || value.Sign() < 0 || !value.IsUint64() {
+		return 0, fmt.Errorf("%s must be a non-negative uint64", name)
+	}
+	return value.Uint64(), nil
 }
 
 func decodeKey(keyText, keyHex string) ([]byte, error) {
@@ -1052,6 +1082,20 @@ type contractStateResponse struct {
 	Value           string `json:"value,omitempty"`
 }
 
+type blockTelemetryResponse struct {
+	Height                uint64                    `json:"height"`
+	StateRoot             string                    `json:"state_root"`
+	ProposerPubkey        string                    `json:"proposer_pubkey"`
+	TxCount               uint64                    `json:"tx_count"`
+	TotalValue            string                    `json:"total_value"`
+	MeanValue             string                    `json:"mean_value"`
+	Variance              string                    `json:"variance"`
+	TxTypes               []*frgpb.TxTypeCount      `json:"tx_types"`
+	Levels                []*frgpb.RGLevelTelemetry `json:"levels"`
+	ContractStateIncluded bool                      `json:"contract_state_included"`
+	Warning               string                    `json:"warning,omitempty"`
+}
+
 func formatAccount(resp *frgpb.AccountResponse) accountResponse {
 	return accountResponse{
 		Pubkey:  hex.EncodeToString(resp.Pubkey),
@@ -1082,5 +1126,21 @@ func formatContractState(resp *frgpb.ContractStateResponse) contractStateRespons
 		Key:             hex.EncodeToString(resp.Key),
 		Found:           resp.Found,
 		Value:           hex.EncodeToString(resp.Value),
+	}
+}
+
+func formatBlockTelemetry(resp *frgpb.BlockTelemetryResponse) blockTelemetryResponse {
+	return blockTelemetryResponse{
+		Height:                resp.Height,
+		StateRoot:             hex.EncodeToString(resp.StateRoot),
+		ProposerPubkey:        hex.EncodeToString(resp.ProposerPubkey),
+		TxCount:               resp.TxCount,
+		TotalValue:            resp.TotalValue,
+		MeanValue:             resp.MeanValue,
+		Variance:              resp.Variance,
+		TxTypes:               resp.TxTypes,
+		Levels:                resp.Levels,
+		ContractStateIncluded: resp.ContractStateIncluded,
+		Warning:               resp.Warning,
 	}
 }

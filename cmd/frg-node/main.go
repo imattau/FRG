@@ -1169,6 +1169,27 @@ func (n *nodeRuntime) ListMempool() (*frgpb.MempoolList, error) {
 	return &frgpb.MempoolList{Entries: entries}, nil
 }
 
+func (n *nodeRuntime) GetBlockTelemetry(height uint64) (*frgpb.BlockTelemetryResponse, error) {
+	if n.sm == nil {
+		return nil, fmt.Errorf("state machine unavailable")
+	}
+	if height == 0 {
+		current, err := n.sm.CurrentHeight()
+		if err != nil {
+			return nil, fmt.Errorf("current height: %w", err)
+		}
+		height = current
+	}
+	if height == 0 {
+		return nil, fmt.Errorf("no committed block after genesis")
+	}
+	block, err := n.sm.BlockAt(height)
+	if err != nil {
+		return nil, fmt.Errorf("load block %d: %w", height, err)
+	}
+	return blockTelemetry(block)
+}
+
 func consensusPhaseName(p consensus.Phase) string {
 	switch p {
 	case consensus.PhasePropose:
