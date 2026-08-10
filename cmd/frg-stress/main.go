@@ -72,8 +72,6 @@ func main() {
 		acctKeys[i] = keys.NewKeypairFromSeed(seed)
 	}
 
-	st := &stats{startTime: time.Now()}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -112,18 +110,25 @@ func main() {
 		clients[i] = frgpb.NewFRGClient(conn)
 	}
 
-	// Each account goroutine needs its own ticker -- a single ticker
-	// shared across all of them (the previous approach) delivers each
-	// tick to only one goroutine at a time, so total throughput was
-	// capped at the ticker's own rate no matter how many accounts were
-	// used, instead of scaling with account count as --rate intends.
-	deadline := time.After(*duration)
-
-	var wg sync.WaitGroup
+	// Pre-sign every transaction before the timed window starts, instead
+	// of signing on the hot path per submission (the previous approach).
+	// Signing (SignSender/SignReceiver, both Ed25519) is real CPU work --
+	// under load this tool was measured at 600-700% CPU of its own,
+	// competing directly with the node's signature-verification work for
+	// the same finite cores on a shared test machine. That contention,
+	// not the node's real capacity, was capping measured throughput
+	// around ~44,000 tps regardless of --conns/--rate. Pre-signing moves
+	// all of that cost into an untimed warmup phase, so the timed window
+	// measures pure submission (ticker wait + gRPC call + bookkeeping)
+	// against whatever CPU the node can actually claim.
+	fmt.Fprintf(os.Stderr, "Pre-signing %d accounts x %d tx...\n", len(accounts), *txPerAccount)
+	pregenStart := time.Now()
+	accountBatches := make([][][]byte, len(acctKeys))
+	var pregenWg sync.WaitGroup
 	for i, kp := range acctKeys {
-		wg.Add(1)
+		pregenWg.Add(1)
 		go func(idx int, sender *keys.Keypair) {
-			defer wg.Done()
+			defer pregenWg.Done()
 
 			client := clients[idx%len(clients)]
 			nonce, err := getNonce(client, sender.PublicKey)
@@ -132,90 +137,102 @@ func main() {
 				return
 			}
 
-			ticker := time.NewTicker(time.Second / time.Duration(*rate/len(accounts)+1))
-			defer ticker.Stop()
-
-			count := 0
-			for count < *txPerAccount {
-				select {
-				case <-ctx.Done():
-					return
-				case <-deadline:
-					return
-				case <-ticker.C:
-				}
-
+			batch := make([][]byte, 0, *txPerAccount)
+			for n := 0; n < *txPerAccount; n++ {
 				rcvrKP, err := keys.GenerateKeypair()
 				if err != nil {
 					continue
 				}
-
-				// candidateNonce, not nonce itself: nonce only advances on
-				// a confirmed-accepted submission (see below). FRG applies
-				// blocks atomically -- a single tx with an unexpected nonce
-				// fails the whole proposal and evicts every tx in it,
-				// including ones from unrelated accounts. Advancing nonce
-				// unconditionally here (the previous behavior) meant any
-				// transient rejection (e.g. the node's rate limiter)
-				// permanently desynced this account's nonce from the
-				// chain's real one: every later submission would then
-				// carry a nonce the chain would never accept, poisoning
-				// whatever block it landed in and evicting good
-				// transactions from other accounts along with it --
-				// observed live as a cascading wave of ERR_018 "expected
-				// nonce N, got M" block-apply failures with M climbing far
-				// past N. Retrying the same candidateNonce on failure is
-				// self-healing instead.
-				candidateNonce := nonce + 1
 				tr := &tx.Tx{
 					Type:           tx.TxTypeTransfer,
 					Sender:         fmt.Sprintf("stress-%d", idx),
 					Receiver:       fmt.Sprintf("stress-%d-rcvr", idx),
 					Value:          big.NewInt(1),
-					Nonce:          candidateNonce,
+					Nonce:          nonce + uint64(n) + 1,
 					SenderPubKey:   sender.PublicKey,
 					ReceiverPubKey: rcvrKP.PublicKey,
 				}
-
 				sig, err := tr.SignSender(sender)
 				if err != nil {
-					st.failed.Add(1)
 					continue
 				}
 				tr.SenderSig = sig
-
 				rsig, err := tr.SignReceiver(rcvrKP)
 				if err != nil {
-					st.failed.Add(1)
 					continue
 				}
 				tr.ReceiverSig = rsig
-
 				txBytes, err := tr.Serialize()
 				if err != nil {
-					st.failed.Add(1)
 					continue
 				}
-
-				tstart := time.Now()
-				if err := submitTx(client, txBytes); err != nil {
-					st.failed.Add(1)
-					continue
-				}
-				nonce = candidateNonce
-
-				latency := time.Since(tstart)
-				st.latMu.Lock()
-				st.latencies = append(st.latencies, latency)
-				st.latMu.Unlock()
-
-				st.submitted.Add(1)
-				count++
+				batch = append(batch, txBytes)
 			}
+			accountBatches[idx] = batch
 		}(i, kp)
 	}
+	pregenWg.Wait()
+	fmt.Fprintf(os.Stderr, "Pre-signing done in %v\n", time.Since(pregenStart))
 
+	st := &stats{startTime: time.Now()}
+	// A context.WithTimeout, not time.After: time.After's channel delivers
+	// its single value to whichever one of these goroutines happens to
+	// receive it first, leaving every other goroutine blind to the
+	// deadline and running until it exhausts its own pre-signed batch
+	// instead. Confirmed live: a "-duration 90s" run actually ran 295.9s.
+	// ctx.Done()'s channel is closed, not sent-on, so every goroutine
+	// selecting on it wakes up at once -- the correct fan-out broadcast.
+	runCtx, runCancel := context.WithTimeout(ctx, *duration)
+	defer runCancel()
 	go progressReporter(st)
+
+	// Each account goroutine needs its own ticker -- a single ticker
+	// shared across all of them (the previous approach) delivers each
+	// tick to only one goroutine at a time, so total throughput was
+	// capped at the ticker's own rate no matter how many accounts were
+	// used, instead of scaling with account count as --rate intends.
+	var wg sync.WaitGroup
+	for i := range acctKeys {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			client := clients[idx%len(clients)]
+			ticker := time.NewTicker(time.Second / time.Duration(*rate/len(accounts)+1))
+			defer ticker.Stop()
+
+			for _, txBytes := range accountBatches[idx] {
+				// Retry the same pre-signed tx (same nonce) on failure
+				// instead of moving on -- moving on would skip a nonce
+				// the chain still expects. See the historical note in
+				// git blame for why that matters: FRG applies blocks
+				// atomically, so an account whose lowest pending nonce
+				// never lands can poison every future proposal that
+				// includes its later, still-pending nonces.
+				for {
+					select {
+					case <-runCtx.Done():
+						return
+					case <-ticker.C:
+					}
+
+					tstart := time.Now()
+					if err := submitTx(client, txBytes); err != nil {
+						st.failed.Add(1)
+						continue
+					}
+
+					latency := time.Since(tstart)
+					st.latMu.Lock()
+					st.latencies = append(st.latencies, latency)
+					st.latMu.Unlock()
+
+					st.submitted.Add(1)
+					break
+				}
+			}
+		}(i)
+	}
 
 	wg.Wait()
 	printSummary(st)
