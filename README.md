@@ -153,7 +153,7 @@ go build -o frg-wallet ./cmd/frg-wallet
 ./frg-wallet --create-key --node 127.0.0.1:50051 --listen 127.0.0.1:8090
 ```
 
-It exposes local HTTP endpoints for pubkey, account/balance, transfers, bonding, contract deploy/call, faucet requests, node status, and validators. The reusable Go package is available at `github.com/imattau/frg/wallet`. See [docs/wallet-api.md](docs/wallet-api.md).
+It exposes local HTTP endpoints for pubkey, account/balance, transfers, bonding, contract deploy/call/state queries, faucet requests, node status, and validators. The reusable Go package is available at `github.com/imattau/frg/wallet`. See [docs/wallet-api.md](docs/wallet-api.md).
 
 ### Validator Docker Quickstart
 

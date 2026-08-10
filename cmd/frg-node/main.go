@@ -1113,6 +1113,21 @@ func (n *nodeRuntime) GetAccount(pubkey [32]byte) (*frgpb.AccountResponse, error
 	}, nil
 }
 
+func (n *nodeRuntime) GetContractState(contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error) {
+	exists, found, value, stateRoot, err := n.sm.ContractState(contractAddr, key)
+	if err != nil {
+		return nil, fmt.Errorf("contract state: %w", err)
+	}
+	return &frgpb.ContractStateResponse{
+		ContractAddress: contractAddr[:],
+		Exists:          exists,
+		StateRoot:       stateRoot[:],
+		Key:             append([]byte(nil), key...),
+		Found:           found,
+		Value:           append([]byte(nil), value...),
+	}, nil
+}
+
 func (n *nodeRuntime) ListValidators() (*frgpb.ValidatorList, error) {
 	pubkeys, bonds, err := n.staking.BondedAmounts()
 	if err != nil {

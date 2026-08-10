@@ -110,6 +110,14 @@ func (sm *StateMachine) CurrentStateRoot() ([32]byte, error) {
 	return root, err
 }
 
+func (sm *StateMachine) ContractState(contractAddr [32]byte, key []byte) (exists bool, found bool, value []byte, stateRoot [32]byte, err error) {
+	err = sm.db.View(func(btx *bolt.Tx) error {
+		exists, found, value, stateRoot = contract.LoadStateValue(btx, contractAddr, key)
+		return nil
+	})
+	return exists, found, value, stateRoot, err
+}
+
 // GenesisApplied reports whether immutable genesis initialization completed.
 func (sm *StateMachine) GenesisApplied() (bool, error) {
 	var applied bool

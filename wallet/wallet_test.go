@@ -16,10 +16,11 @@ import (
 )
 
 type fakeClient struct {
-	account *frgpb.AccountResponse
-	status  *frgpb.StatusResponse
-	vals    *frgpb.ValidatorList
-	tx      *tx.Tx
+	account       *frgpb.AccountResponse
+	contractState *frgpb.ContractStateResponse
+	status        *frgpb.StatusResponse
+	vals          *frgpb.ValidatorList
+	tx            *tx.Tx
 }
 
 func (f *fakeClient) SubmitTx(_ context.Context, in *frgpb.RawBytes, _ ...grpc.CallOption) (*frgpb.SubmitResponse, error) {
@@ -51,6 +52,16 @@ func (f *fakeClient) GetAccount(context.Context, *frgpb.AccountRequest, ...grpc.
 		return &frgpb.AccountResponse{Balance: "0"}, nil
 	}
 	return f.account, nil
+}
+
+func (f *fakeClient) GetContractState(_ context.Context, req *frgpb.ContractStateRequest, _ ...grpc.CallOption) (*frgpb.ContractStateResponse, error) {
+	if f.contractState == nil {
+		return &frgpb.ContractStateResponse{
+			ContractAddress: append([]byte(nil), req.ContractAddress...),
+			Key:             append([]byte(nil), req.Key...),
+		}, nil
+	}
+	return f.contractState, nil
 }
 
 func (f *fakeClient) ListValidators(context.Context, *frgpb.Empty, ...grpc.CallOption) (*frgpb.ValidatorList, error) {
@@ -244,5 +255,34 @@ func TestCallContractUsesContractReceiver(t *testing.T) {
 	}
 	if err := fc.tx.VerifySigsForChain("contracts"); err != nil {
 		t.Fatalf("call signature did not verify: %v", err)
+	}
+}
+
+func TestContractStateQueriesNode(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var addr [32]byte
+	for i := range addr {
+		addr[i] = byte(i)
+	}
+	fc := &fakeClient{contractState: &frgpb.ContractStateResponse{
+		ContractAddress: addr[:],
+		Exists:          true,
+		Key:             []byte("count"),
+		Found:           true,
+		Value:           []byte{7},
+	}}
+	w, err := New(kp, fc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := w.ContractState(context.Background(), addr, []byte("count"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Exists || !resp.Found || string(resp.Key) != "count" || len(resp.Value) != 1 || resp.Value[0] != 7 {
+		t.Fatalf("unexpected contract state response: %+v", resp)
 	}
 }

@@ -65,6 +65,20 @@ type AccountResponse struct {
 	Nonce   uint64 `json:"nonce,omitempty"`
 }
 
+type ContractStateRequest struct {
+	ContractAddress []byte `json:"contract_address,omitempty"`
+	Key             []byte `json:"key,omitempty"`
+}
+
+type ContractStateResponse struct {
+	ContractAddress []byte `json:"contract_address,omitempty"`
+	Exists          bool   `json:"exists,omitempty"`
+	StateRoot       []byte `json:"state_root,omitempty"`
+	Key             []byte `json:"key,omitempty"`
+	Found           bool   `json:"found,omitempty"`
+	Value           []byte `json:"value,omitempty"`
+}
+
 type ValidatorEntry struct {
 	Pubkey []byte `json:"pubkey,omitempty"`
 	Bond   string `json:"bond,omitempty"`
@@ -90,6 +104,7 @@ type FRGClient interface {
 	SubscribeBlocks(ctx context.Context, in *Empty, opts ...grpc.CallOption) (FRG_SubscribeBlocksClient, error)
 	GetStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*StatusResponse, error)
 	GetAccount(ctx context.Context, in *AccountRequest, opts ...grpc.CallOption) (*AccountResponse, error)
+	GetContractState(ctx context.Context, in *ContractStateRequest, opts ...grpc.CallOption) (*ContractStateResponse, error)
 	ListValidators(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ValidatorList, error)
 	ListMempool(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*MempoolList, error)
 }
@@ -170,6 +185,15 @@ func (c *fRGClient) GetAccount(ctx context.Context, in *AccountRequest, opts ...
 	return out, nil
 }
 
+func (c *fRGClient) GetContractState(ctx context.Context, in *ContractStateRequest, opts ...grpc.CallOption) (*ContractStateResponse, error) {
+	out := new(ContractStateResponse)
+	err := c.cc.Invoke(ctx, "/frg.FRG/GetContractState", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *fRGClient) ListValidators(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ValidatorList, error) {
 	out := new(ValidatorList)
 	err := c.cc.Invoke(ctx, "/frg.FRG/ListValidators", in, out, opts...)
@@ -194,6 +218,7 @@ type FRGServer interface {
 	SubscribeBlocks(*Empty, FRG_SubscribeBlocksServer) error
 	GetStatus(context.Context, *Empty) (*StatusResponse, error)
 	GetAccount(context.Context, *AccountRequest) (*AccountResponse, error)
+	GetContractState(context.Context, *ContractStateRequest) (*ContractStateResponse, error)
 	ListValidators(context.Context, *Empty) (*ValidatorList, error)
 	ListMempool(context.Context, *Empty) (*MempoolList, error)
 	mustEmbedUnimplementedFRGServer()
@@ -219,6 +244,10 @@ func (UnimplementedFRGServer) GetStatus(context.Context, *Empty) (*StatusRespons
 
 func (UnimplementedFRGServer) GetAccount(context.Context, *AccountRequest) (*AccountResponse, error) {
 	return nil, errors.New("method GetAccount not implemented")
+}
+
+func (UnimplementedFRGServer) GetContractState(context.Context, *ContractStateRequest) (*ContractStateResponse, error) {
+	return nil, errors.New("method GetContractState not implemented")
 }
 
 func (UnimplementedFRGServer) ListValidators(context.Context, *Empty) (*ValidatorList, error) {
@@ -324,6 +353,24 @@ func _FRG_GetAccount_Handler(srv any, ctx context.Context, dec func(any) error, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _FRG_GetContractState_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+	in := new(ContractStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FRGServer).GetContractState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/frg.FRG/GetContractState",
+	}
+	handler := func(ctx context.Context, req any) (any, error) {
+		return srv.(FRGServer).GetContractState(ctx, req.(*ContractStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _FRG_ListValidators_Handler(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
 	in := new(Empty)
 	if err := dec(in); err != nil {
@@ -387,6 +434,10 @@ var FRG_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetAccount",
 			Handler:    _FRG_GetAccount_Handler,
+		},
+		{
+			MethodName: "GetContractState",
+			Handler:    _FRG_GetContractState_Handler,
 		},
 		{
 			MethodName: "ListValidators",

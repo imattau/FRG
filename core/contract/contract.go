@@ -161,8 +161,22 @@ func LoadStateRoot(btx *bolt.Tx, addr [32]byte) [32]byte {
 	return loadState(btx, addr).StateRoot()
 }
 
+func LoadStateValue(btx *bolt.Tx, addr [32]byte, key []byte) (exists bool, found bool, value []byte, stateRoot [32]byte) {
+	if !IsContract(btx, addr) {
+		return false, false, nil, [32]byte{}
+	}
+	state := loadState(btx, addr)
+	stateRoot = state.StateRoot()
+	if len(key) == 0 {
+		return true, false, nil, stateRoot
+	}
+	value, found = state.Get(key)
+	return true, found, value, stateRoot
+}
+
 func IsContract(btx *bolt.Tx, addr [32]byte) bool {
-	return btx.Bucket(bytecodeBucket).Get(addr[:]) != nil
+	b := btx.Bucket(bytecodeBucket)
+	return b != nil && b.Get(addr[:]) != nil
 }
 
 func contractExists(btx *bolt.Tx, addr [32]byte) (bool, error) {

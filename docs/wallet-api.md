@@ -141,7 +141,29 @@ curl -X POST http://127.0.0.1:8090/contracts/call \
 
 The current contract runtime selects the exported function from the first four bytes of calldata. If neither `function` nor `call_data_hex` is provided, the wallet sends `call`.
 
-Read-only contract state queries are not exposed by the node gRPC API yet. Contract state is currently observable through committed state roots and application-specific contract calls.
+Query contract existence and state root:
+
+```sh
+curl "http://127.0.0.1:8090/contracts/state?contract_address=CONTRACT_ADDRESS"
+```
+
+Query a contract state key as text:
+
+```sh
+curl "http://127.0.0.1:8090/contracts/state?contract_address=CONTRACT_ADDRESS&key=count"
+```
+
+Query a contract state key as raw hex:
+
+```sh
+curl "http://127.0.0.1:8090/contracts/state?contract_address=CONTRACT_ADDRESS&key_hex=636f756e74"
+```
+
+Response values are hex-encoded:
+
+```json
+{"contract_address":"...","exists":true,"state_root":"...","key":"636f756e74","found":true,"value":"07"}
+```
 
 ### Faucet
 
@@ -208,6 +230,14 @@ func main() {
 
 	wasm := []byte{0x00, 0x61, 0x73, 0x6d}
 	if _, err := w.DeployContract(ctx, wasm, big.NewInt(0)); err != nil {
+		panic(err)
+	}
+
+	addr, err := wallet.DecodePubKey("CONTRACT_ADDRESS")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.ContractState(ctx, addr, []byte("count")); err != nil {
 		panic(err)
 	}
 }

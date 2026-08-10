@@ -18,9 +18,9 @@ var minimalWasm = []byte{
 	0x01, 0x00, 0x00, 0x00, // version
 
 	// Type section (id=1): 1 type: () -> ()
-	0x01,       // section id
-	0x04,       // section size (payload: 1 byte count + 3 byte functype)
-	0x01,       // type count
+	0x01,             // section id
+	0x04,             // section size (payload: 1 byte count + 3 byte functype)
+	0x01,             // type count
 	0x60, 0x00, 0x00, // functype: 0 params, 0 results
 
 	// Function section (id=3): 2 functions, both type 0
@@ -30,9 +30,9 @@ var minimalWasm = []byte{
 	0x00, 0x00, // type indices
 
 	// Export section (id=7): export "init" (func 0), "call" (func 1)
-	0x07,       // section id
-	0x0F,       // section size (fixed: 1+7+7=15)
-	0x02,       // export count
+	0x07, // section id
+	0x0F, // section size (fixed: 1+7+7=15)
+	0x02, // export count
 	// export "init"
 	0x04, 0x69, 0x6E, 0x69, 0x74, // name "init"
 	0x00, // func
@@ -43,9 +43,9 @@ var minimalWasm = []byte{
 	0x01, // index 1
 
 	// Code section (id=10): 2 function bodies
-	0x0A,       // section id
-	0x07,       // section size (fixed: 1+3+3=7)
-	0x02,       // body count
+	0x0A, // section id
+	0x07, // section size (fixed: 1+3+3=7)
+	0x02, // body count
 	// body 0
 	0x02, 0x00, 0x0B, // size=2, 0 locals, end
 	// body 1
@@ -175,6 +175,75 @@ func TestContractDeployAndCall(t *testing.T) {
 
 	t.Logf("stateRoot after deploy: %x", stateRoot)
 	t.Logf("stateRoot after call:   %x", callRoot)
+}
+
+func TestLoadStateValue(t *testing.T) {
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(btx *bolt.Tx) error {
+		_, err := btx.CreateBucketIfNotExists([]byte("contract_bytecode"))
+		if err != nil {
+			return err
+		}
+		_, err = btx.CreateBucketIfNotExists([]byte("contract_state"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deployTx := &tx.Tx{
+		Type:         tx.TxTypeContractDeploy,
+		Sender:       "alice",
+		Receiver:     "contract",
+		Value:        big.NewInt(0),
+		Nonce:        1,
+		SenderPubKey: kp.PublicKey,
+		WasmBytes:    minimalWasm,
+	}
+	sig, _ := deployTx.SignSender(kp)
+	deployTx.SenderSig = sig
+	contractAddr := contract.ContractAddr(kp.PublicKey, 1)
+
+	if err := db.Update(func(btx *bolt.Tx) error {
+		if _, _, err := contract.Deploy(btx, l, deployTx, 1, 1000000); err != nil {
+			return err
+		}
+		state := contract.NewStateStore()
+		if err := state.Set([]byte("count"), []byte{7}); err != nil {
+			return err
+		}
+		return btx.Bucket([]byte("contract_state")).Put(contractAddr[:], state.Serialize())
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.View(func(btx *bolt.Tx) error {
+		exists, found, value, root := contract.LoadStateValue(btx, contractAddr, []byte("count"))
+		if !exists || !found {
+			t.Fatalf("exists=%v found=%v", exists, found)
+		}
+		if len(value) != 1 || value[0] != 7 {
+			t.Fatalf("value = %x", value)
+		}
+		if root == [32]byte{} {
+			t.Fatal("empty state root")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestContractAddrDeterminism(t *testing.T) {

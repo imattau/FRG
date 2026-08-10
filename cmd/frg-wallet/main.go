@@ -67,6 +67,15 @@ type contractAddressResponse struct {
 	ContractAddress string `json:"contract_address"`
 }
 
+type contractStateResponse struct {
+	ContractAddress string `json:"contract_address"`
+	Exists          bool   `json:"exists"`
+	StateRoot       string `json:"state_root,omitempty"`
+	Key             string `json:"key,omitempty"`
+	Found           bool   `json:"found"`
+	Value           string `json:"value,omitempty"`
+}
+
 type faucetRequest struct {
 	Pubkey string `json:"pubkey"`
 }
@@ -118,6 +127,7 @@ func main() {
 	mux.HandleFunc("/transfer", s.handleTransfer)
 	mux.HandleFunc("/bond", s.handleBond)
 	mux.HandleFunc("/contracts/address", s.handleContractAddress)
+	mux.HandleFunc("/contracts/state", s.handleContractState)
 	mux.HandleFunc("/contracts/deploy", s.handleContractDeploy)
 	mux.HandleFunc("/contracts/call", s.handleContractCall)
 	mux.HandleFunc("/faucet", s.handleFaucet)
@@ -299,6 +309,32 @@ func (s *server) handleContractDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *server) handleContractState(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	addrRaw := r.URL.Query().Get("contract_address")
+	if addrRaw == "" {
+		addrRaw = r.URL.Query().Get("address")
+	}
+	addr, err := wallet.DecodePubKey(addrRaw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("contract_address must be 32-byte hex"))
+		return
+	}
+	key, err := queryKey(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := s.w.ContractState(r.Context(), addr, key)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, formatContractState(resp))
+}
+
 func (s *server) handleContractCall(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -408,11 +444,44 @@ func contractCallData(req contractCallRequest) ([]byte, error) {
 	return []byte(req.Function), nil
 }
 
+func queryKey(r *http.Request) ([]byte, error) {
+	keyHex := r.URL.Query().Get("key_hex")
+	keyText := r.URL.Query().Get("key")
+	if keyHex != "" && keyText != "" {
+		return nil, fmt.Errorf("use key_hex or key, not both")
+	}
+	if keyHex != "" {
+		key, err := hex.DecodeString(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("key_hex must be hex")
+		}
+		if len(key) > 32 {
+			return nil, fmt.Errorf("contract state key must be at most 32 bytes")
+		}
+		return key, nil
+	}
+	if len(keyText) > 32 {
+		return nil, fmt.Errorf("contract state key must be at most 32 bytes")
+	}
+	return []byte(keyText), nil
+}
+
 func formatAccount(resp *frgpb.AccountResponse) accountResponse {
 	return accountResponse{
 		Pubkey:  hex.EncodeToString(resp.Pubkey),
 		Balance: resp.Balance,
 		Nonce:   resp.Nonce,
+	}
+}
+
+func formatContractState(resp *frgpb.ContractStateResponse) contractStateResponse {
+	return contractStateResponse{
+		ContractAddress: hex.EncodeToString(resp.ContractAddress),
+		Exists:          resp.Exists,
+		StateRoot:       hex.EncodeToString(resp.StateRoot),
+		Key:             hex.EncodeToString(resp.Key),
+		Found:           resp.Found,
+		Value:           hex.EncodeToString(resp.Value),
 	}
 }
 

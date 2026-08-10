@@ -19,10 +19,11 @@ import (
 )
 
 type fakeNode struct {
-	txCh    chan *tx.Tx
-	batchCh chan []*tx.Tx
-	blockCh chan []byte
-	status  *frgpb.StatusResponse
+	txCh          chan *tx.Tx
+	batchCh       chan []*tx.Tx
+	blockCh       chan []byte
+	status        *frgpb.StatusResponse
+	contractState *frgpb.ContractStateResponse
 }
 
 func (f *fakeNode) BroadcastTx(t *tx.Tx) error {
@@ -46,9 +47,32 @@ func (f *fakeNode) Status() (*frgpb.StatusResponse, error) {
 	return &frgpb.StatusResponse{}, nil
 }
 
+func (f *fakeNode) GetAccount(pubkey [32]byte) (*frgpb.AccountResponse, error) {
+	return &frgpb.AccountResponse{Pubkey: pubkey[:], Balance: "0"}, nil
+}
+
+func (f *fakeNode) GetContractState(contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error) {
+	if f.contractState != nil {
+		return f.contractState, nil
+	}
+	return &frgpb.ContractStateResponse{
+		ContractAddress: contractAddr[:],
+		Key:             append([]byte(nil), key...),
+	}, nil
+}
+
+func (f *fakeNode) ListValidators() (*frgpb.ValidatorList, error) {
+	return &frgpb.ValidatorList{}, nil
+}
+
+func (f *fakeNode) ListMempool() (*frgpb.MempoolList, error) {
+	return &frgpb.MempoolList{}, nil
+}
+
 type nodeTestAPI interface {
 	nodeAPI
 	nodeStatusAPI
+	nodeQueryAPI
 }
 
 func newGRPCBufconnServer(t *testing.T, node nodeTestAPI) (*grpc.ClientConn, func()) {
@@ -56,7 +80,7 @@ func newGRPCBufconnServer(t *testing.T, node nodeTestAPI) (*grpc.ClientConn, fun
 
 	lis := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
-	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node})
+	frgpb.RegisterFRGServer(server, &nodeGRPCServer{node: node, stat: node, query: node})
 
 	go func() {
 		_ = server.Serve(lis)
@@ -263,5 +287,39 @@ func TestNodeGRPCGetStatus(t *testing.T) {
 	}
 	if resp.Height != 11 || resp.ConsensusPhase != "commit" {
 		t.Fatalf("unexpected status response: %+v", resp)
+	}
+}
+
+func TestNodeGRPCGetContractState(t *testing.T) {
+	var addr [32]byte
+	for i := range addr {
+		addr[i] = byte(100 + i)
+	}
+	node := &fakeNode{
+		txCh:    make(chan *tx.Tx, 1),
+		batchCh: make(chan []*tx.Tx, 1),
+		blockCh: make(chan []byte, 1),
+		contractState: &frgpb.ContractStateResponse{
+			ContractAddress: addr[:],
+			Exists:          true,
+			StateRoot:       []byte{0xaa},
+			Key:             []byte("count"),
+			Found:           true,
+			Value:           []byte{9},
+		},
+	}
+	conn, cleanup := newGRPCBufconnServer(t, node)
+	defer cleanup()
+
+	client := frgpb.NewFRGClient(conn)
+	resp, err := client.GetContractState(context.Background(), &frgpb.ContractStateRequest{
+		ContractAddress: addr[:],
+		Key:             []byte("count"),
+	}, grpc.CallContentSubtype("frg-json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Exists || !resp.Found || len(resp.Value) != 1 || resp.Value[0] != 9 {
+		t.Fatalf("unexpected contract state response: %+v", resp)
 	}
 }

@@ -89,6 +89,7 @@ type nodeStatusAPI interface {
 
 type nodeQueryAPI interface {
 	GetAccount(pubkey [32]byte) (*frgpb.AccountResponse, error)
+	GetContractState(contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error)
 	ListValidators() (*frgpb.ValidatorList, error)
 	ListMempool() (*frgpb.MempoolList, error)
 }
@@ -239,6 +240,24 @@ func (s *nodeGRPCServer) GetAccount(ctx context.Context, req *frgpb.AccountReque
 	var pubkey [32]byte
 	copy(pubkey[:], req.Pubkey)
 	return s.query.GetAccount(pubkey)
+}
+
+func (s *nodeGRPCServer) GetContractState(ctx context.Context, req *frgpb.ContractStateRequest) (*frgpb.ContractStateResponse, error) {
+	if err := s.authorizer.authorize(ctx, roleObserver); err != nil {
+		return nil, err
+	}
+	if s.query == nil {
+		return nil, fmt.Errorf("query backend not available")
+	}
+	if req == nil || len(req.ContractAddress) != 32 {
+		return nil, fmt.Errorf("contract_address must be 32 bytes")
+	}
+	if len(req.Key) > 32 {
+		return nil, fmt.Errorf("contract state key must be at most 32 bytes")
+	}
+	var contractAddr [32]byte
+	copy(contractAddr[:], req.ContractAddress)
+	return s.query.GetContractState(contractAddr, req.Key)
 }
 
 func (s *nodeGRPCServer) ListValidators(ctx context.Context, _ *frgpb.Empty) (*frgpb.ValidatorList, error) {

@@ -10,6 +10,7 @@ service FRG {
   rpc SubscribeBlocks(Empty) returns (stream RawBytes);
   rpc GetStatus(Empty) returns (StatusResponse);
   rpc GetAccount(AccountRequest) returns (AccountResponse);
+  rpc GetContractState(ContractStateRequest) returns (ContractStateResponse);
   rpc ListValidators(Empty) returns (ValidatorList);
   rpc ListMempool(Empty) returns (MempoolList);
 }
@@ -48,6 +49,20 @@ message AccountResponse {
   bytes pubkey = 1;
   string balance = 2;
   uint64 nonce = 3;
+}
+
+message ContractStateRequest {
+  bytes contract_address = 1;
+  bytes key = 2;
+}
+
+message ContractStateResponse {
+  bytes contract_address = 1;
+  bool exists = 2;
+  bytes state_root = 3;
+  bytes key = 4;
+  bool found = 5;
+  bytes value = 6;
 }
 
 message ValidatorEntry {

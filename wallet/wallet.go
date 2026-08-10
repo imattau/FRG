@@ -149,6 +149,13 @@ func (w *Wallet) Validators(ctx context.Context) (*frgpb.ValidatorList, error) {
 	return w.client.ListValidators(ctx, &frgpb.Empty{}, grpc.CallContentSubtype("frg-json"))
 }
 
+func (w *Wallet) ContractState(ctx context.Context, contractAddr [32]byte, key []byte) (*frgpb.ContractStateResponse, error) {
+	return w.client.GetContractState(ctx, &frgpb.ContractStateRequest{
+		ContractAddress: contractAddr[:],
+		Key:             append([]byte(nil), key...),
+	}, grpc.CallContentSubtype("frg-json"))
+}
+
 func (w *Wallet) Transfer(ctx context.Context, to [32]byte, amount *big.Int) (*TransferResult, error) {
 	if amount == nil || amount.Sign() <= 0 {
 		return nil, fmt.Errorf("amount must be positive")
