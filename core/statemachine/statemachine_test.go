@@ -387,6 +387,86 @@ func makeMissEvidenceTx(t *testing.T, reporter *keys.Keypair, missed [32]byte, h
 	return tr
 }
 
+func makeBondTx(t *testing.T, validator *keys.Keypair, amount *big.Int, nonce uint64) *tx.Tx {
+	t.Helper()
+	tr := &tx.Tx{
+		Type:           tx.TxTypeBond,
+		Sender:         "validator",
+		Receiver:       "staking",
+		Value:          new(big.Int).Set(amount),
+		Nonce:          nonce,
+		SenderPubKey:   validator.PublicKey,
+		ReceiverPubKey: validator.PublicKey,
+	}
+	sig, err := tr.SignSender(validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.SenderSig = sig
+	return tr
+}
+
+func TestApplyBlockBondTxActivatesValidator(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kp, _ := keys.GenerateKeypair()
+	initial := big.NewInt(10_000)
+	if err := l.Seed(kp.PublicKey, new(big.Int).Set(initial)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, initial)
+
+	bondTx := makeBondTx(t, kp, big.NewInt(1000), 1)
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{bondTx}, ProposerPubKey: kp.PublicKey}); err != nil {
+		t.Fatalf("ApplyBlock: %v", err)
+	}
+	validators, amounts, err := s.BondedAmounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(validators) != 1 || validators[0] != kp.PublicKey {
+		t.Fatalf("unexpected validators: %x", validators)
+	}
+	if len(amounts) != 1 || amounts[0].Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("unexpected bonded amount: %v", amounts)
+	}
+	escrowBal, _ := l.BalanceOf(staking.EscrowAccount(kp.PublicKey))
+	if escrowBal.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("escrow balance = %v, want 1000", escrowBal)
+	}
+}
+
+func TestApplyBlockRejectsMalformedBondTx(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	s, _ := staking.New(db, l)
+	kp, _ := keys.GenerateKeypair()
+	if err := l.Seed(kp.PublicKey, big.NewInt(10_000)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, big.NewInt(10_000))
+
+	bondTx := makeBondTx(t, kp, big.NewInt(1000), 1)
+	bondTx.ReceiverPubKey = [32]byte{9}
+	sig, err := bondTx.SignSender(kp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bondTx.SenderSig = sig
+
+	if _, err := sm.ApplyBlock(&statemachine.Block{Height: 1, Txs: []*tx.Tx{bondTx}, ProposerPubKey: kp.PublicKey}); err == nil {
+		t.Fatal("malformed bond transaction was accepted")
+	}
+	validators, _, err := s.BondedAmounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(validators) != 0 {
+		t.Fatalf("malformed bond mutated validator set: %x", validators)
+	}
+}
+
 func TestApplyBlockRejectsForgedMissEvidence(t *testing.T) {
 	sm, db := openSM(t)
 	l, _ := ledger.New(db)

@@ -37,8 +37,12 @@ func main() {
 		submitCmd(os.Args[2:])
 	case "send":
 		sendCmd(os.Args[2:])
+	case "bond":
+		bondCmd(os.Args[2:])
 	case "status":
 		statusCmd(os.Args[2:])
+	case "validators":
+		validatorsCmd(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -59,13 +63,16 @@ Commands:
   submit --tx <full_hex>               Submit fully-signed tx to network
   send --to <pubkey> --amount <n> --receiver-key <path>
                                     All-in-one send (devnet convenience)
+  bond --amount <n>                Bond this key as an active validator
   status                        Show network node status
+  validators                    List active bonded validators
 
 Flags:
   --key <path>       Keypair file (default: frg-cli.key)
   --addr <host:port> FRG node gRPC address (default: localhost:50051)
   --to <pubkey_hex>  Recipient 32-byte Ed25519 pubkey
   --amount <n>       Transfer amount (quanta)
+  --chain-id <id>    Chain ID for transaction signatures (default: frg-mainnet-1)
   --tx <hex>         Serialized tx for sign/submit
   --sender <name>    Sender label in tx (default: "cli")
   --receiver <name>  Receiver label in tx (default: "cli")
@@ -484,6 +491,80 @@ func sendCmd(args []string) {
 	fmt.Printf("ok  txid=%x\n", txid[:])
 }
 
+func bondCmd(args []string) {
+	flags := flagSet(args)
+	keyPath := getFlag(flags, "--key", "-k")
+	addr := getFlag(flags, "--addr", "-a")
+	if addr == "" {
+		addr = defaultNodeAddr
+	}
+	amountStr := getFlag(flags, "--amount", "-m")
+	chainID := getFlag(flags, "--chain-id")
+	if chainID == "" {
+		chainID = tx.DefaultChainID
+	}
+	if amountStr == "" {
+		fmt.Fprintln(os.Stderr, "bond: --amount required")
+		os.Exit(1)
+	}
+	amount, ok := new(big.Int).SetString(amountStr, 10)
+	if !ok || amount.Sign() <= 0 {
+		fmt.Fprintln(os.Stderr, "bond: invalid --amount")
+		os.Exit(1)
+	}
+	kp, err := resolveKey(keyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load key: %v\n", err)
+		os.Exit(1)
+	}
+
+	conn, err := dialNode(addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dial %s: %v\n", addr, err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	client := frgpb.NewFRGClient(conn)
+	acct, err := client.GetAccount(context.Background(), &frgpb.AccountRequest{Pubkey: kp.PublicKey[:]}, callOpt()...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "GetAccount: %v\n", err)
+		os.Exit(1)
+	}
+
+	tr := &tx.Tx{
+		Type:           tx.TxTypeBond,
+		Sender:         "validator",
+		Receiver:       "staking",
+		Value:          amount,
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   kp.PublicKey,
+		ReceiverPubKey: kp.PublicKey,
+	}
+	sig, err := tr.SignSenderForChain(kp, chainID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sign: %v\n", err)
+		os.Exit(1)
+	}
+	tr.SenderSig = sig
+	txBytes, err := tr.Serialize()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serialize: %v\n", err)
+		os.Exit(1)
+	}
+	resp, err := client.SubmitTx(context.Background(), &frgpb.RawBytes{Data: txBytes}, callOpt()...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SubmitTx: %v\n", err)
+		os.Exit(1)
+	}
+	if !resp.Ok {
+		fmt.Fprintf(os.Stderr, "rejected: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	txid, _ := tr.ID()
+	fmt.Printf("ok  validator=%x amount=%s txid=%x\n", kp.PublicKey[:], amount.String(), txid[:])
+}
+
 func statusCmd(args []string) {
 	flags := flagSet(args)
 	addr := getFlag(flags, "--addr", "-a")
@@ -513,6 +594,31 @@ func statusCmd(args []string) {
 	fmt.Printf("consensus_phase:   %s\n", resp.ConsensusPhase)
 	fmt.Printf("consensus_round:   %d\n", resp.ConsensusRound)
 	fmt.Printf("grpc_only:         %v\n", resp.GrpcOnly)
+}
+
+func validatorsCmd(args []string) {
+	flags := flagSet(args)
+	addr := getFlag(flags, "--addr", "-a")
+	if addr == "" {
+		addr = defaultNodeAddr
+	}
+
+	conn, err := dialNode(addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dial %s: %v\n", addr, err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	client := frgpb.NewFRGClient(conn)
+	resp, err := client.ListValidators(context.Background(), &frgpb.Empty{}, callOpt()...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ListValidators: %v\n", err)
+		os.Exit(1)
+	}
+	for i, v := range resp.Validators {
+		fmt.Printf("%d pubkey=%s bond=%s\n", i+1, hex.EncodeToString(v.Pubkey), v.Bond)
+	}
 }
 
 func dialNode(addr string) (*grpc.ClientConn, error) {

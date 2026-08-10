@@ -61,6 +61,27 @@ cd frg-data
 
 If this node is intended to be a genesis validator, send the printed `validator_pubkey` to the network coordinator before genesis is finalized.
 
+## Become a Validator After Joining
+
+A joined node can sync as a full node immediately. To become an active validator after genesis, fund the node's validator public key and submit a bond transaction from the node key:
+
+```sh
+go build -o frg-cli ./cmd/frg-cli
+./frg-cli bond \
+  --key frg-data/frg.key \
+  --addr 127.0.0.1:50051 \
+  --chain-id frg-mainnet-1 \
+  --amount 1000
+```
+
+The bond amount must be at least the protocol minimum. The account also needs enough extra balance to pay transaction gas. Once the bond transaction is committed, the node appears in `ListValidators` and participates in proposer/vote selection.
+
+Confirm activation:
+
+```sh
+./frg-cli validators --addr 127.0.0.1:50051
+```
+
 ## Manual Start
 
 The generated `run-validator.sh` is equivalent to:

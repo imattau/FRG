@@ -321,6 +321,16 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
 					return err
 				}
+			case tx.TxTypeBond:
+				if err := validateBondTx(t); err != nil {
+					return err
+				}
+				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
+					return err
+				}
+				if err := sm.staking.BondTx(btx, t.SenderPubKey, t.Value, b.Height); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -528,4 +538,17 @@ func missEvidenceKey(t *tx.Tx) string {
 	binary.BigEndian.PutUint32(buf[8:12], t.SkipIndex)
 	copy(buf[12:], t.MissedProposer[:])
 	return string(buf)
+}
+
+func validateBondTx(t *tx.Tx) error {
+	if t.Value == nil || t.Value.Sign() <= 0 {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "bond value must be positive")
+	}
+	if t.ReceiverPubKey != t.SenderPubKey {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "bond receiver must match validator pubkey")
+	}
+	if t.MissedHeight != 0 || t.MissedProposer != [32]byte{} || t.SkipIndex != 0 {
+		return rgerrors.New(rgerrors.ErrCanonicalEncodingDistortion, "bond transaction contains non-zero evidence fields")
+	}
+	return nil
 }

@@ -33,6 +33,7 @@ const (
 	TxTypeMissEvidence   TxType = 2
 	TxTypeContractDeploy TxType = 3
 	TxTypeContractCall   TxType = 4
+	TxTypeBond           TxType = 5
 )
 
 const maxWasmBytes = 1 << 20 // 1 MB
@@ -331,8 +332,7 @@ func Deserialize(data []byte) (*Tx, error) {
 
 // VerifySigs verifies Ed25519 signatures against H(Tx_Bytes_unsigned).
 // TRANSFER: verifies both SenderSig and ReceiverSig.
-// MISS_EVIDENCE: verifies only SenderSig.
-// CONTRACT_DEPLOY / CONTRACT_CALL: verifies only SenderSig (single-sig).
+// MISS_EVIDENCE / CONTRACT_DEPLOY / CONTRACT_CALL / BOND verify only SenderSig.
 func (t *Tx) VerifySigs() error {
 	return t.VerifySigsForChain(DefaultChainID)
 }
@@ -352,7 +352,7 @@ func (t *Tx) VerifySigsForChain(chainID string) error {
 		if !keys.Verify(t.ReceiverPubKey, msg[:], t.ReceiverSig) {
 			return rgerrors.New(rgerrors.ErrInvalidSignature, "receiver signature verification failed")
 		}
-	case TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall:
+	case TxTypeMissEvidence, TxTypeContractDeploy, TxTypeContractCall, TxTypeBond:
 		if !keys.Verify(t.SenderPubKey, msg[:], t.SenderSig) {
 			return rgerrors.New(rgerrors.ErrInvalidSignature, "sender signature verification failed")
 		}

@@ -202,6 +202,9 @@ func TestTxTypeConstants(t *testing.T) {
 	if tx.TxTypeMissEvidence != 2 {
 		t.Fatalf("TxTypeMissEvidence: got %d want 2", tx.TxTypeMissEvidence)
 	}
+	if tx.TxTypeBond != 5 {
+		t.Fatalf("TxTypeBond: got %d want 5", tx.TxTypeBond)
+	}
 }
 
 func TestTxStructHasMissFields(t *testing.T) {
