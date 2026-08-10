@@ -571,6 +571,62 @@ func TestRuntimeStateSetHostChargeOutOfGas(t *testing.T) {
 	}
 }
 
+func TestRuntimeBalanceReadsReuseBlockTransaction(t *testing.T) {
+	wasmBytes, err := wasmtime.Wat2Wasm(`
+		(module
+		  (import "frg" "self_balance" (func $self_balance (param i32)))
+		  (import "frg" "balance_of" (func $balance_of (param i32 i32 i32)))
+		  (memory (export "memory") 1)
+		  (func (export "init"))
+		  (func (export "call")
+		    (call $self_balance (i32.const 0))
+		    (call $balance_of (i32.const 0) (i32.const 32) (i32.const 16))
+		  )
+		)
+	`)
+	if err != nil {
+		t.Fatalf("Wat2Wasm: %v", err)
+	}
+
+	db, err := bolt.Open(t.TempDir()+"/test.db", 0600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	l, err := ledger.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(kp.PublicKey, big.NewInt(10000)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Update(func(btx *bolt.Tx) error {
+		rt, err := contract.NewRuntime(&contract.RuntimeConfig{
+			WasmBytes:   wasmBytes,
+			Caller:      kp.PublicKey,
+			SelfAddr:    kp.PublicKey,
+			Value:       big.NewInt(0),
+			BlockHeight: 1,
+			State:       contract.NewStateStore(),
+			Ledger:      l,
+			BoltTx:      btx,
+			GasLimit:    1000,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = rt.Call("call")
+		return err
+	}); err != nil {
+		t.Fatalf("runtime balance reads: %v", err)
+	}
+}
+
 func TestRuntimeHostFunctionFuelCharges(t *testing.T) {
 	wasmBytes, err := wasmtime.Wat2Wasm(`
 		(module

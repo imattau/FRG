@@ -982,6 +982,57 @@ func TestContractCallSameFeeForSameWorkload(t *testing.T) {
 	t.Logf("GasBurned:  %s", result.GasBurned)
 }
 
+func TestUnknownContractSelectorDoesNotStallBlock(t *testing.T) {
+	sm, db := openSM(t)
+	l, _ := ledger.New(db)
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Seed(kp.PublicKey, big.NewInt(1000)); err != nil {
+		t.Fatal(err)
+	}
+	setTotalSupply(t, sm, big.NewInt(1000))
+
+	if _, err := sm.ApplyBlock(&statemachine.Block{
+		Height: 1,
+		Txs:    []*tx.Tx{makeDeployTx(t, kp, 1)},
+	}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+
+	callTx := &tx.Tx{
+		Type:           tx.TxTypeContractCall,
+		Sender:         "test",
+		Receiver:       "contract",
+		Value:          big.NewInt(0),
+		Nonce:          2,
+		SenderPubKey:   kp.PublicKey,
+		ReceiverPubKey: contract.ContractAddr(kp.PublicKey, 1),
+		CallData:       []byte("garb"),
+	}
+	callTx.SenderSig, err = callTx.SignSender(kp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.ApplyBlock(&statemachine.Block{
+		Height: 2,
+		Txs:    []*tx.Tx{callTx},
+	}); err != nil {
+		t.Fatalf("unknown selector must not reject block: %v", err)
+	}
+	if height, err := sm.CurrentHeight(); err != nil || height != 2 {
+		t.Fatalf("height = %d, err=%v; want 2", height, err)
+	}
+	nonce, err := l.NonceOf(kp.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonce != 2 {
+		t.Fatalf("nonce = %d, want 2", nonce)
+	}
+}
+
 func TestBaseFeeAdjustsAcrossBlocks(t *testing.T) {
 	sm, db := openSM(t)
 	l, _ := ledger.New(db)

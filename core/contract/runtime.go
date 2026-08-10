@@ -180,7 +180,9 @@ func (r *Runtime) defineHostFunctions(cfg *RuntimeConfig) {
 			return
 		}
 		mem := mustMem(caller)
-		bal, _ := cfg.Ledger.BalanceOf(cfg.SelfAddr)
+		// Block application already owns the bbolt write transaction. Reusing it
+		// avoids opening a nested read transaction, which would block forever.
+		bal := cfg.Ledger.BalanceOfTx(cfg.BoltTx, cfg.SelfAddr)
 		writeMem(mem, caller, outPtr, 16, padBigToLE(bal, 16))
 	})
 
@@ -199,7 +201,7 @@ func (r *Runtime) defineHostFunctions(cfg *RuntimeConfig) {
 		}
 		var addr32 [32]byte
 		copy(addr32[:], addr)
-		bal, _ := cfg.Ledger.BalanceOf(addr32)
+		bal := cfg.Ledger.BalanceOfTx(cfg.BoltTx, addr32)
 		writeMem(mem, caller, outPtr, 16, padBigToLE(bal, 16))
 	})
 
@@ -416,7 +418,7 @@ func padBigToLE(n *big.Int, width int) []byte {
 func (r *Runtime) Call(functionName string) ([]byte, error) {
 	run := r.instance.GetFunc(r.store, functionName)
 	if run == nil {
-		return nil, fmt.Errorf("%w: function %q not found", rgerrors.New(rgerrors.ErrContractNonDeterministic, ""), functionName)
+		return nil, fmt.Errorf("%w: %q", ErrFunctionNotFound, functionName)
 	}
 
 	_, err := run.Call(r.store)

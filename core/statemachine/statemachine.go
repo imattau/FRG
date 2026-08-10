@@ -2,6 +2,7 @@ package statemachine
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/big"
 
 	"github.com/imattau/frg/core/contract"
@@ -325,6 +326,11 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 				}
 				_, fuelUsed, err := contract.Call(btx, sm.ledger, t, b.Height, gasLimit)
 				if err != nil {
+					// An unknown selector is a deterministic transaction rejection.
+					// It must not invalidate the containing block or stall height.
+					if errors.Is(err, contract.ErrFunctionNotFound) {
+						continue
+					}
 					return err
 				}
 				txFuels[i] = fuelUsed

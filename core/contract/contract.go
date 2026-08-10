@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/imattau/frg/core/hash"
@@ -8,6 +9,11 @@ import (
 	"github.com/imattau/frg/core/tx"
 	bolt "go.etcd.io/bbolt"
 )
+
+// ErrFunctionNotFound identifies a contract call whose four-byte selector
+// does not name an exported function. The state machine treats this as a
+// rejected transaction rather than a block-execution failure.
+var ErrFunctionNotFound = errors.New("contract function not found")
 
 var (
 	bytecodeBucket = []byte("contract_bytecode")
@@ -80,12 +86,6 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit
 		return [32]byte{}, 0, fmt.Errorf("contract %x not found", contractAddr)
 	}
 
-	if t.Value != nil && t.Value.Sign() > 0 {
-		if err := l.MoveTx(btx, t.SenderPubKey, contractAddr, t.Value); err != nil {
-			return [32]byte{}, 0, fmt.Errorf("fund contract call: %w", err)
-		}
-	}
-
 	state := loadState(btx, contractAddr)
 	// The selector chooses the exported function; the remaining bytes are the
 	// contract payload exposed through frg.calldata_len/calldata_copy.
@@ -111,6 +111,15 @@ func Call(btx *bolt.Tx, l *ledger.Ledger, t *tx.Tx, blockHeight uint64, gasLimit
 	rt, err := NewRuntime(cfg)
 	if err != nil {
 		return [32]byte{}, 0, err
+	}
+	if rt.instance.GetFunc(rt.store, funcName) == nil {
+		return [32]byte{}, 0, fmt.Errorf("%w: %q", ErrFunctionNotFound, funcName)
+	}
+
+	if t.Value != nil && t.Value.Sign() > 0 {
+		if err := l.MoveTx(btx, t.SenderPubKey, contractAddr, t.Value); err != nil {
+			return [32]byte{}, 0, fmt.Errorf("fund contract call: %w", err)
+		}
 	}
 
 	if _, err := rt.Call(funcName); err != nil {
