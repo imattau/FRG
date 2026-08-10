@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/bytecodealliance/wasmtime-go/v28 v28.0.0
+	github.com/consensys/gnark-crypto v0.20.1
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/libp2p/go-libp2p-kad-dht v0.40.0
 	github.com/libp2p/go-libp2p-pubsub v0.16.0
@@ -13,6 +14,7 @@ require (
 	golang.org/x/crypto v0.50.0
 	golang.org/x/text v0.36.0
 	google.golang.org/grpc v1.79.2
+	google.golang.org/protobuf v1.36.11
 	pgregory.net/rapid v1.3.0
 )
 
@@ -21,6 +23,7 @@ require (
 	filippo.io/keygen v0.0.0-20260114151900-8e2790ea4c5b // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
@@ -124,6 +127,5 @@ require (
 	golang.org/x/tools v0.44.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )

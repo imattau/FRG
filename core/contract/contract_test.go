@@ -8,14 +8,36 @@ import (
 	"testing"
 
 	"github.com/bytecodealliance/wasmtime-go/v28"
+	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/imattau/frg/core/contract"
 	rgerrors "github.com/imattau/frg/core/errors"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/ledger"
 	"github.com/imattau/frg/core/tx"
 	bolt "go.etcd.io/bbolt"
-	"golang.org/x/crypto/bn256"
 )
+
+// bn254EIP197Pair encodes a (G1, G2) pair in the same raw big-endian,
+// EIP-197-convention 192 bytes contract.Bn254PairingCheck expects: G1 as
+// x||y, G2 as x.c1||x.c0||y.c1||y.c0 (imaginary component first). Not
+// gnark-crypto's own RawBytes()/Marshal() -- those reserve metadata bits
+// in the leading byte that this wire format doesn't have.
+func bn254EIP197Pair(g1 bn254.G1Affine, g2 bn254.G2Affine) []byte {
+	out := make([]byte, 0, 192)
+	xb := g1.X.Bytes()
+	yb := g1.Y.Bytes()
+	out = append(out, xb[:]...)
+	out = append(out, yb[:]...)
+	xa1 := g2.X.A1.Bytes()
+	xa0 := g2.X.A0.Bytes()
+	ya1 := g2.Y.A1.Bytes()
+	ya0 := g2.Y.A0.Bytes()
+	out = append(out, xa1[:]...)
+	out = append(out, xa0[:]...)
+	out = append(out, ya1[:]...)
+	out = append(out, ya0[:]...)
+	return out
+}
 
 // minimalWasm builds a valid WASM module that exports "init" (no-op) and "call" (no-op).
 // This is a hand-crafted binary with: 1 type, 1 func, 2 exports, 2 code bodies.
@@ -286,13 +308,16 @@ func TestRuntimeOutOfFuelUsesContractGasError(t *testing.T) {
 }
 
 func TestBn254PairingCheck(t *testing.T) {
-	g1 := new(bn256.G1).ScalarBaseMult(big.NewInt(1))
-	negG1 := new(bn256.G1).Neg(g1)
-	g2 := new(bn256.G2).ScalarBaseMult(big.NewInt(1))
+	var g1 bn254.G1Affine
+	g1.ScalarMultiplicationBase(big.NewInt(1))
+	var negG1 bn254.G1Affine
+	negG1.Neg(&g1)
+	var g2 bn254.G2Affine
+	g2.ScalarMultiplicationBase(big.NewInt(1))
 
-	input := append(append([]byte{}, g1.Marshal()...), g2.Marshal()...)
-	input = append(input, negG1.Marshal()...)
-	input = append(input, g2.Marshal()...)
+	pair1 := bn254EIP197Pair(g1, g2)
+	pair2 := bn254EIP197Pair(negG1, g2)
+	input := append(append([]byte{}, pair1...), pair2...)
 
 	ok, err := contract.Bn254PairingCheck(input)
 	if err != nil {
@@ -302,7 +327,7 @@ func TestBn254PairingCheck(t *testing.T) {
 		t.Fatal("expected pairing product to equal one")
 	}
 
-	ok, err = contract.Bn254PairingCheck(append(append([]byte{}, g1.Marshal()...), g2.Marshal()...))
+	ok, err = contract.Bn254PairingCheck(pair1)
 	if err != nil {
 		t.Fatalf("single pairing check: %v", err)
 	}
@@ -376,13 +401,14 @@ func TestRuntimeCalldataLengthAndCopy(t *testing.T) {
 }
 
 func TestRuntimeBn254PairingPrecompile(t *testing.T) {
-	g1 := new(bn256.G1).ScalarBaseMult(big.NewInt(1))
-	negG1 := new(bn256.G1).Neg(g1)
-	g2 := new(bn256.G2).ScalarBaseMult(big.NewInt(1))
+	var g1 bn254.G1Affine
+	g1.ScalarMultiplicationBase(big.NewInt(1))
+	var negG1 bn254.G1Affine
+	negG1.Neg(&g1)
+	var g2 bn254.G2Affine
+	g2.ScalarMultiplicationBase(big.NewInt(1))
 
-	input := append(append([]byte{}, g1.Marshal()...), g2.Marshal()...)
-	input = append(input, negG1.Marshal()...)
-	input = append(input, g2.Marshal()...)
+	input := append(append([]byte{}, bn254EIP197Pair(g1, g2)...), bn254EIP197Pair(negG1, g2)...)
 
 	wasmBytes, err := wasmtime.Wat2Wasm(fmt.Sprintf(`
 		(module
