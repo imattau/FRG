@@ -129,7 +129,9 @@ Newly committed blocks persist an exact compact telemetry summary, including tou
 
 `frg_work_state` queries the standard state keys from a work contract.
 
-`frg_work_action` calls one standard action on a work contract. The FRG
+`frg_work_action` calls one standard action on a work contract. It accepts an
+optional `payload_hex` field; MCP prepends the canonical action selector and
+appends those decoded bytes to form the contract calldata. The FRG
 contract dispatcher selects the exported function from the first four bytes of
 calldata; the remaining payload is available through
 `frg.calldata_len()`/`frg.calldata_copy(...)`. Contracts can therefore parse

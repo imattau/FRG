@@ -145,6 +145,23 @@ func TestWorkActionSelector(t *testing.T) {
 	}
 }
 
+func TestWorkActionCalldataAppendsPayload(t *testing.T) {
+	got, err := workActionCalldata("subm", "0102ff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got[:4]) != "subm" || string(got[4:]) != string([]byte{1, 2, 0xff}) {
+		t.Fatalf("calldata = %x", got)
+	}
+	got, err = workActionCalldata("post", "")
+	if err != nil || string(got) != "post" {
+		t.Fatalf("empty payload calldata = %x, err=%v", got, err)
+	}
+	if _, err := workActionCalldata("post", "not-hex"); err == nil {
+		t.Fatal("expected invalid payload hex error")
+	}
+}
+
 func TestBuildWorkTermsStableHash(t *testing.T) {
 	terms := workTerms{
 		Description:        "render report",

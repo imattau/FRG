@@ -352,6 +352,7 @@ func (s *mcpServer) tools() []tool {
 		writeTool("frg_work_action", "Call a standard agent work escrow action if policy allows it.", objectSchema(map[string]any{
 			"contract_address": stringSchema("32-byte contract address hex"),
 			"action":           stringSchema("post, accept, submit, approve, reject, claim, or cancel"),
+			"payload_hex":      stringSchema("optional action payload hex; appended after the four-byte action selector"),
 			"value":            stringSchema("optional value in FRG decimal units, e.g. escrow reward on post"),
 			"value_quanta":     stringSchema("optional raw value in integer quanta"),
 		}, []string{"contract_address", "action"})),
@@ -659,6 +660,7 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		var in struct {
 			ContractAddress string `json:"contract_address"`
 			Action          string `json:"action"`
+			PayloadHex      string `json:"payload_hex"`
 			Value           string `json:"value"`
 			ValueQuanta     string `json:"value_quanta"`
 		}
@@ -673,6 +675,10 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		if err != nil {
 			return nil, err
 		}
+		callData, err := workActionCalldata(selector, in.PayloadHex)
+		if err != nil {
+			return nil, err
+		}
 		value, err := parseOptionalAmountFields(in.Value, in.ValueQuanta, "value")
 		if err != nil {
 			return nil, err
@@ -680,18 +686,20 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args json.RawMess
 		if err := s.policy.allowSpend("contract_call", in.ContractAddress, value, false, false); err != nil {
 			return nil, err
 		}
-		resp, err := s.w.CallContract(ctx, addr, []byte(selector), value)
+		resp, err := s.w.CallContract(ctx, addr, callData, value)
 		if err != nil {
 			return nil, err
 		}
 		s.policy.recordSpend(value)
 		return jsonTool(map[string]any{
-			"action":   in.Action,
-			"selector": selector,
-			"txid":     resp.TxID,
-			"value":    denom.FormatFRG(value),
-			"quanta":   value.String(),
-			"contract": strings.ToLower(in.ContractAddress),
+			"action":       in.Action,
+			"selector":     selector,
+			"payload_hex":  hex.EncodeToString(callData[len(selector):]),
+			"calldata_hex": hex.EncodeToString(callData),
+			"txid":         resp.TxID,
+			"value":        denom.FormatFRG(value),
+			"quanta":       value.String(),
+			"contract":     strings.ToLower(in.ContractAddress),
 		})
 	case "frg_request_faucet":
 		if s.faucetURL == "" {
@@ -1108,6 +1116,18 @@ func workActionSelector(action string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown work action %q", action)
 	}
+}
+
+func workActionCalldata(selector, payloadHex string) ([]byte, error) {
+	payloadHex = strings.TrimSpace(payloadHex)
+	if payloadHex == "" {
+		return []byte(selector), nil
+	}
+	payload, err := hex.DecodeString(payloadHex)
+	if err != nil {
+		return nil, fmt.Errorf("payload_hex must be hex")
+	}
+	return append([]byte(selector), payload...), nil
 }
 
 func (p *policy) allowSpend(action string, target string, amount *big.Int, bond bool, deploy bool) error {
