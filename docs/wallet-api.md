@@ -15,7 +15,7 @@ Both surfaces use the same model: the wallet owns one Ed25519 keypair, queries t
 frg-wallet --listen 127.0.0.1:8090
 ```
 
-Anyone who can reach this API can spend the wallet key through `POST /transfer` and `POST /bond`.
+Anyone who can reach this API can spend the wallet key through `POST /transfer`, `POST /bond`, `POST /contracts/deploy`, and `POST /contracts/call`.
 
 ## Build
 
@@ -94,6 +94,55 @@ curl -X POST http://127.0.0.1:8090/bond \
 
 This bonds the local wallet key as a validator key. The account must already hold enough FRG for the bond and transaction gas.
 
+### Contracts
+
+Predict the address for the wallet's next contract deployment:
+
+```sh
+curl http://127.0.0.1:8090/contracts/address
+```
+
+Predict the address for a specific deploy nonce:
+
+```sh
+curl "http://127.0.0.1:8090/contracts/address?nonce=12"
+```
+
+Deploy a WASM contract:
+
+```sh
+WASM_HEX="$(xxd -p -c 0 contract.wasm)"
+curl -X POST http://127.0.0.1:8090/contracts/deploy \
+  -H 'content-type: application/json' \
+  -d "{\"wasm_hex\":\"$WASM_HEX\",\"value\":\"0\"}"
+```
+
+Response:
+
+```json
+{"txid":"...","contract_address":"..."}
+```
+
+Call a contract:
+
+```sh
+curl -X POST http://127.0.0.1:8090/contracts/call \
+  -H 'content-type: application/json' \
+  -d '{"contract_address":"CONTRACT_ADDRESS","function":"call","value":"0"}'
+```
+
+For lower-level callers, provide raw calldata:
+
+```sh
+curl -X POST http://127.0.0.1:8090/contracts/call \
+  -H 'content-type: application/json' \
+  -d '{"contract_address":"CONTRACT_ADDRESS","call_data_hex":"63616c6c"}'
+```
+
+The current contract runtime selects the exported function from the first four bytes of calldata. If neither `function` nor `call_data_hex` is provided, the wallet sends `call`.
+
+Read-only contract state queries are not exposed by the node gRPC API yet. Contract state is currently observable through committed state roots and application-specific contract calls.
+
 ### Faucet
 
 Start the wallet with a faucet URL:
@@ -154,6 +203,11 @@ func main() {
 		panic(err)
 	}
 	if _, err := w.Transfer(ctx, to, big.NewInt(100)); err != nil {
+		panic(err)
+	}
+
+	wasm := []byte{0x00, 0x61, 0x73, 0x6d}
+	if _, err := w.DeployContract(ctx, wasm, big.NewInt(0)); err != nil {
 		panic(err)
 	}
 }

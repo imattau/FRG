@@ -51,6 +51,22 @@ type bondRequest struct {
 	Amount string `json:"amount"`
 }
 
+type contractDeployRequest struct {
+	WasmHex string `json:"wasm_hex"`
+	Value   string `json:"value"`
+}
+
+type contractCallRequest struct {
+	ContractAddress string `json:"contract_address"`
+	CallDataHex     string `json:"call_data_hex"`
+	Function        string `json:"function"`
+	Value           string `json:"value"`
+}
+
+type contractAddressResponse struct {
+	ContractAddress string `json:"contract_address"`
+}
+
 type faucetRequest struct {
 	Pubkey string `json:"pubkey"`
 }
@@ -101,6 +117,9 @@ func main() {
 	mux.HandleFunc("/validators", s.handleValidators)
 	mux.HandleFunc("/transfer", s.handleTransfer)
 	mux.HandleFunc("/bond", s.handleBond)
+	mux.HandleFunc("/contracts/address", s.handleContractAddress)
+	mux.HandleFunc("/contracts/deploy", s.handleContractDeploy)
+	mux.HandleFunc("/contracts/call", s.handleContractCall)
 	mux.HandleFunc("/faucet", s.handleFaucet)
 
 	srv := &http.Server{
@@ -231,6 +250,87 @@ func (s *server) handleBond(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *server) handleContractAddress(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	nonceRaw := r.URL.Query().Get("nonce")
+	if nonceRaw == "" {
+		acct, err := s.w.OwnAccount(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		nonceRaw = fmt.Sprintf("%d", acct.Nonce+1)
+	}
+	nonce, ok := new(big.Int).SetString(nonceRaw, 10)
+	if !ok || nonce.Sign() <= 0 || !nonce.IsUint64() {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("nonce must be a positive uint64"))
+		return
+	}
+	addr := s.w.ContractAddress(nonce.Uint64())
+	writeJSON(w, http.StatusOK, contractAddressResponse{ContractAddress: hex.EncodeToString(addr[:])})
+}
+
+func (s *server) handleContractDeploy(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req contractDeployRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+	wasm, err := hex.DecodeString(req.WasmHex)
+	if err != nil || len(wasm) == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("wasm_hex must be non-empty hex"))
+		return
+	}
+	value, err := parseOptionalAmount(req.Value)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := s.w.DeployContract(r.Context(), wasm, value)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *server) handleContractCall(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req contractCallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+	addr, err := wallet.DecodePubKey(req.ContractAddress)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("contract_address must be 32-byte hex"))
+		return
+	}
+	callData, err := contractCallData(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	value, err := parseOptionalAmount(req.Value)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := s.w.CallContract(r.Context(), addr, callData, value)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *server) handleFaucet(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
@@ -278,6 +378,34 @@ func parseAmount(raw string) (*big.Int, error) {
 		return nil, fmt.Errorf("amount must be a positive base-10 integer")
 	}
 	return amount, nil
+}
+
+func parseOptionalAmount(raw string) (*big.Int, error) {
+	if raw == "" {
+		return big.NewInt(0), nil
+	}
+	amount, ok := new(big.Int).SetString(raw, 10)
+	if !ok || amount.Sign() < 0 {
+		return nil, fmt.Errorf("value must be a non-negative base-10 integer")
+	}
+	return amount, nil
+}
+
+func contractCallData(req contractCallRequest) ([]byte, error) {
+	if req.CallDataHex != "" {
+		data, err := hex.DecodeString(req.CallDataHex)
+		if err != nil {
+			return nil, fmt.Errorf("call_data_hex must be hex")
+		}
+		return data, nil
+	}
+	if req.Function == "" {
+		return []byte("call"), nil
+	}
+	if len(req.Function) != 4 {
+		return nil, fmt.Errorf("function must be exactly 4 bytes")
+	}
+	return []byte(req.Function), nil
 }
 
 func formatAccount(resp *frgpb.AccountResponse) accountResponse {

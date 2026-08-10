@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/imattau/frg/core/contract"
 	"github.com/imattau/frg/core/keys"
 	"github.com/imattau/frg/core/tx"
 	frgpb "github.com/imattau/frg/proto"
@@ -32,6 +33,11 @@ type Client struct {
 
 type TransferResult struct {
 	TxID string `json:"txid"`
+}
+
+type DeployResult struct {
+	TxID            string `json:"txid"`
+	ContractAddress string `json:"contract_address"`
 }
 
 type FaucetResult struct {
@@ -181,6 +187,66 @@ func (w *Wallet) Bond(ctx context.Context, amount *big.Int) (*TransferResult, er
 		ReceiverPubKey: w.kp.PublicKey,
 	}
 	return w.signAndSubmit(ctx, tr)
+}
+
+func (w *Wallet) DeployContract(ctx context.Context, wasm []byte, value *big.Int) (*DeployResult, error) {
+	if len(wasm) == 0 {
+		return nil, fmt.Errorf("wasm is required")
+	}
+	acct, err := w.OwnAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if value == nil {
+		value = big.NewInt(0)
+	}
+	if value.Sign() < 0 {
+		return nil, fmt.Errorf("value must not be negative")
+	}
+	nonce := acct.Nonce + 1
+	tr := &tx.Tx{
+		Type:         tx.TxTypeContractDeploy,
+		Sender:       "wallet",
+		Receiver:     "contract",
+		Value:        new(big.Int).Set(value),
+		Nonce:        nonce,
+		SenderPubKey: w.kp.PublicKey,
+		WasmBytes:    append([]byte(nil), wasm...),
+	}
+	res, err := w.signAndSubmit(ctx, tr)
+	if err != nil {
+		return nil, err
+	}
+	addr := contract.ContractAddr(w.kp.PublicKey, nonce)
+	return &DeployResult{TxID: res.TxID, ContractAddress: hex.EncodeToString(addr[:])}, nil
+}
+
+func (w *Wallet) CallContract(ctx context.Context, contractAddr [32]byte, callData []byte, value *big.Int) (*TransferResult, error) {
+	acct, err := w.OwnAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if value == nil {
+		value = big.NewInt(0)
+	}
+	if value.Sign() < 0 {
+		return nil, fmt.Errorf("value must not be negative")
+	}
+	tr := &tx.Tx{
+		Type:           tx.TxTypeContractCall,
+		Sender:         "wallet",
+		Receiver:       "contract",
+		Value:          new(big.Int).Set(value),
+		Nonce:          acct.Nonce + 1,
+		SenderPubKey:   w.kp.PublicKey,
+		ReceiverPubKey: contractAddr,
+		CallData:       append([]byte(nil), callData...),
+	}
+	return w.signAndSubmit(ctx, tr)
+}
+
+func (w *Wallet) ContractAddress(nonce uint64) [32]byte {
+	return contract.ContractAddr(w.kp.PublicKey, nonce)
 }
 
 func (w *Wallet) signAndSubmit(ctx context.Context, tr *tx.Tx) (*TransferResult, error) {

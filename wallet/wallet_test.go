@@ -176,3 +176,73 @@ func TestBondUsesOwnPubkeyAsReceiver(t *testing.T) {
 		t.Fatalf("bond signature did not verify: %v", err)
 	}
 }
+
+func TestDeployContractReturnsDeterministicAddress(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeClient{account: &frgpb.AccountResponse{Balance: "1000", Nonce: 10}}
+	w, err := New(kp, fc, "contracts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasm := []byte{0x00, 0x61, 0x73, 0x6d}
+	res, err := w.DeployContract(context.Background(), wasm, big.NewInt(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.tx.Type != tx.TxTypeContractDeploy {
+		t.Fatalf("type = %d", fc.tx.Type)
+	}
+	if fc.tx.Nonce != 11 {
+		t.Fatalf("nonce = %d, want 11", fc.tx.Nonce)
+	}
+	if string(fc.tx.WasmBytes) != string(wasm) {
+		t.Fatalf("wasm mismatch")
+	}
+	if fc.tx.Value.Cmp(big.NewInt(7)) != 0 {
+		t.Fatalf("value = %s", fc.tx.Value)
+	}
+	wantAddr := w.ContractAddress(11)
+	if res.ContractAddress != hex.EncodeToString(wantAddr[:]) {
+		t.Fatalf("contract address = %s, want %x", res.ContractAddress, wantAddr)
+	}
+	if err := fc.tx.VerifySigsForChain("contracts"); err != nil {
+		t.Fatalf("deploy signature did not verify: %v", err)
+	}
+}
+
+func TestCallContractUsesContractReceiver(t *testing.T) {
+	kp, err := keys.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var addr [32]byte
+	for i := range addr {
+		addr[i] = byte(50 + i)
+	}
+	fc := &fakeClient{account: &frgpb.AccountResponse{Balance: "1000", Nonce: 3}}
+	w, err := New(kp, fc, "contracts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.CallContract(context.Background(), addr, []byte("call"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if fc.tx.Type != tx.TxTypeContractCall {
+		t.Fatalf("type = %d", fc.tx.Type)
+	}
+	if fc.tx.ReceiverPubKey != addr {
+		t.Fatalf("receiver pubkey mismatch")
+	}
+	if string(fc.tx.CallData) != "call" {
+		t.Fatalf("call data = %q", fc.tx.CallData)
+	}
+	if fc.tx.Value.Sign() != 0 {
+		t.Fatalf("value = %s, want zero", fc.tx.Value)
+	}
+	if err := fc.tx.VerifySigsForChain("contracts"); err != nil {
+		t.Fatalf("call signature did not verify: %v", err)
+	}
+}
