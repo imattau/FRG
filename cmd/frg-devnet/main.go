@@ -69,6 +69,8 @@ func main() {
 	dockerCompose := flag.Bool("docker", true, "use /dns4/ scheme for peer addresses (Docker Compose)")
 	stressAccounts := flag.Int("stress-accounts", 0, "number of pre-funded stress-test accounts")
 	faucetBalance := flag.String("faucet-balance", defaultFaucetBalanceQuanta, "faucet genesis balance in quanta")
+	nodeImage := flag.String("node-image", "", "container image for generated node services; empty uses a local Dockerfile build")
+	faucetImage := flag.String("faucet-image", "", "container image for generated faucet service; empty uses a local Dockerfile build")
 	flag.Parse()
 
 	n := *validators
@@ -199,7 +201,7 @@ func main() {
 	}
 
 	if *dockerCompose {
-		if err := writeDockerCompose(*outputDir, nodes, *stressAccounts > 0); err != nil {
+		if err := writeDockerCompose(*outputDir, nodes, *stressAccounts > 0, *nodeImage, *faucetImage); err != nil {
 			fmt.Fprintf(os.Stderr, "write docker-compose: %v\n", err)
 			os.Exit(1)
 		}
@@ -235,16 +237,18 @@ func buildPeerList(nodes []devNode, selfIdx int, dockerCompose bool) string {
 	return lines
 }
 
-func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool) error {
+func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool, nodeImage, faucetImage string) error {
 	var buf []byte
 	buf = append(buf, "version: \"3.8\"\n\nservices:\n"...)
 
 	for _, nd := range nodes {
 		nodeDir := fmt.Sprintf("node-%d", nd.index)
+		imageOrBuild := fmt.Sprintf("    build:\n      context: ../\n      dockerfile: Dockerfile\n")
+		if nodeImage != "" {
+			imageOrBuild = fmt.Sprintf("    image: %s\n", nodeImage)
+		}
 		svc := fmt.Sprintf(`  %s:
-    build:
-      context: ../
-      dockerfile: Dockerfile
+%s
     container_name: frg-node-%d
     working_dir: /data
     volumes:
@@ -253,7 +257,7 @@ func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool) e
       - "%d:%d"
       - "%d:%d"
     restart: unless-stopped
-`, fmt.Sprintf("frg-node-%d", nd.index), nd.index, nodeDir,
+	`, fmt.Sprintf("frg-node-%d", nd.index), imageOrBuild, nd.index, nodeDir,
 			nd.grpcPort, nd.grpcPort,
 			nd.p2pPort, nd.p2pPort)
 		buf = append(buf, svc...)
@@ -261,10 +265,12 @@ func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool) e
 	}
 
 	if includeFaucet {
-		buf = append(buf, []byte(`  frg-faucet:
-    build:
-      context: ../
-      dockerfile: Dockerfile.faucet
+		faucetImageOrBuild := "    build:\n      context: ../\n      dockerfile: Dockerfile.faucet\n"
+		if faucetImage != "" {
+			faucetImageOrBuild = fmt.Sprintf("    image: %s\n", faucetImage)
+		}
+		buf = append(buf, []byte(fmt.Sprintf(`  frg-faucet:
+%s
     container_name: frg-faucet
     working_dir: /data
     command: frg-faucet --key faucet.key --db faucet.db --node frg-node-0:50051 --listen 0.0.0.0:8088
@@ -275,7 +281,7 @@ func writeDockerCompose(outputDir string, nodes []devNode, includeFaucet bool) e
     restart: unless-stopped
     depends_on:
       - frg-node-0
-`)...)
+	`, faucetImageOrBuild))...)
 	}
 
 	return os.WriteFile(filepath.Join(outputDir, "docker-compose.yml"), buf, 0644)

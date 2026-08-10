@@ -228,7 +228,32 @@ The MCP exposes read tools for status, accounts, validators, mempool, contract s
 
 ### Validator Docker Quickstart
 
-For a containerized validator setup with mounted genesis/key data and environment-based config generation, see [docs/operator-quickstart.md](docs/operator-quickstart.md).
+Published validator and faucet images are available from GitHub Container
+Registry:
+
+```sh
+podman pull ghcr.io/imattau/frg-node:latest
+podman pull ghcr.io/imattau/frg-faucet:latest
+podman pull ghcr.io/imattau/frg-devnet:latest
+```
+
+For a containerized validator setup with mounted genesis/key data and
+environment-based config generation, see [docs/operator-quickstart.md](docs/operator-quickstart.md).
+
+Developers can generate a multi-node Compose devnet without building the
+repository locally:
+
+```sh
+mkdir -p devnet-data
+podman run --rm \
+  -v "$PWD/devnet-data:/workspace:Z" \
+  ghcr.io/imattau/frg-devnet:latest \
+  --validators 3 \
+  --output-dir /workspace \
+  --node-image ghcr.io/imattau/frg-node:latest \
+  --faucet-image ghcr.io/imattau/frg-faucet:latest
+podman compose -f devnet-data/docker-compose.yml up -d
+```
 
 ### Test
 

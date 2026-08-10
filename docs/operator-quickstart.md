@@ -7,11 +7,42 @@ This guide covers the two operator paths:
 
 The examples use Podman. Docker works with the same image and commands; remove `:Z` from volume mounts if your Docker host does not support SELinux labels.
 
-## Build the Image
+## Obtain the Image
+
+Published images are available from GitHub Container Registry:
+
+```sh
+podman pull ghcr.io/imattau/frg-node:latest
+```
+
+Use the published image as `ghcr.io/imattau/frg-node:latest` in the commands
+below. The image is published for `linux/amd64` and `linux/arm64`.
+
+For local development, build the image from the repository instead:
 
 ```sh
 podman build -t frg-node:local .
 ```
+
+## Generate a Developer Devnet
+
+The separate devnet image generates keys, a shared genesis, node configs, and
+a Compose file. It points the generated Compose file at the published images:
+
+```sh
+mkdir -p devnet-data
+podman run --rm \
+  -v "$PWD/devnet-data:/workspace:Z" \
+  ghcr.io/imattau/frg-devnet:latest \
+  --validators 3 \
+  --output-dir /workspace \
+  --node-image ghcr.io/imattau/frg-node:latest \
+  --faucet-image ghcr.io/imattau/frg-faucet:latest
+podman compose -f devnet-data/docker-compose.yml up -d
+```
+
+Use `--stress-accounts N` to add pre-funded development accounts. Omit the
+image flags when generating a Compose file that should build local Dockerfiles.
 
 ## First Node for a New Network
 
@@ -22,7 +53,7 @@ mkdir -p frg-first
 podman run --rm \
   -v "$PWD/frg-first:/var/lib/frg:Z" \
   -e FRG_CHAIN_ID="frg-mainnet-1" \
-  frg-node:local init-first-network
+  ghcr.io/imattau/frg-node:latest init-first-network
 ```
 
 This writes `frg.key`, `config.toml`, `.env`, `genesis.json`, and `run-validator.sh` into `frg-first/`.
@@ -49,7 +80,7 @@ podman run --rm \
   -v "$PWD/genesis.json:/network-genesis.json:ro,Z" \
   -e FRG_CHAIN_ID="frg-mainnet-1" \
   -e FRG_P2P_PEERS="/dns4/bootstrap-1.example/tcp/7777/p2p/PEER_ID" \
-  frg-node:local init-join-network --genesis-source /network-genesis.json
+  ghcr.io/imattau/frg-node:latest init-join-network --genesis-source /network-genesis.json
 ```
 
 Start the validator:
