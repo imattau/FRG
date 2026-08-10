@@ -118,12 +118,13 @@ func TestRunNodeInitCreatesFirstRunFiles(t *testing.T) {
 		"--metrics-listen", "127.0.0.1:19090",
 		"--peers", "/ip4/127.0.0.1/tcp/17778/p2p/peer-a,/dns4/bootstrap.example/tcp/17777/p2p/peer-b",
 		"--bootstrap-genesis",
+		"--write-run-script",
 	}, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"frg.key", "config.toml", ".env", "genesis.json"} {
+	for _, name := range []string{"frg.key", "config.toml", ".env", "genesis.json", "run-validator.sh"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("%s was not created: %v", name, err)
 		}
@@ -168,6 +169,13 @@ func TestRunNodeInitCreatesFirstRunFiles(t *testing.T) {
 	if !strings.Contains(out.String(), "validator_pubkey=") || !strings.Contains(out.String(), "peer_id=") {
 		t.Fatalf("init output missing identity details:\n%s", out.String())
 	}
+	runScript, err := os.ReadFile(filepath.Join(dir, "run-validator.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runScript), `--env-file "$(pwd)/.env"`) {
+		t.Fatalf("run script missing env-file wiring:\n%s", string(runScript))
+	}
 }
 
 func TestRunNodeInitDoesNotCreateGenesisByDefault(t *testing.T) {
@@ -178,6 +186,71 @@ func TestRunNodeInitDoesNotCreateGenesisByDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "genesis.json")); !os.IsNotExist(err) {
 		t.Fatalf("genesis should not be created by default: %v", err)
+	}
+}
+
+func TestRunNodeInitFirstNetworkCreatesGenesisWithoutPeers(t *testing.T) {
+	dir := t.TempDir()
+	var out strings.Builder
+	if err := runNodeInitCommand("init-first-network", []string{"--data-dir", dir, "--chain-id", "frg-first-1", "--write-run-script"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "genesis.json")); err != nil {
+		t.Fatalf("genesis was not created: %v", err)
+	}
+	cfg, err := loadConfig(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChainID != "frg-first-1" {
+		t.Fatalf("chain ID = %q", cfg.ChainID)
+	}
+	if len(cfg.P2P.Peers) != 0 {
+		t.Fatalf("first network should not have bootstrap peers: %v", cfg.P2P.Peers)
+	}
+	if !strings.Contains(out.String(), "mode=first-network") {
+		t.Fatalf("output missing first-network mode:\n%s", out.String())
+	}
+}
+
+func TestRunNodeInitJoinNetworkRequiresPeers(t *testing.T) {
+	dir := t.TempDir()
+	var out strings.Builder
+	err := runNodeInitCommand("init-join-network", []string{"--data-dir", dir}, &out)
+	if err == nil || !strings.Contains(err.Error(), "requires --peers") {
+		t.Fatalf("expected peer requirement error, got %v", err)
+	}
+}
+
+func TestRunNodeInitJoinNetworkCopiesGenesis(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "network-genesis.json")
+	if err := os.WriteFile(source, []byte(`{"chain_id":"frg-join-1","validators":[],"balances":[]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(dir, "node")
+	var out strings.Builder
+	err := runNodeInitCommand("init-join-network", []string{
+		"--data-dir", dataDir,
+		"--chain-id", "frg-join-1",
+		"--peers", "/ip4/127.0.0.1/tcp/17777/p2p/peer-a",
+		"--genesis-source", source,
+	}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "genesis.json")); err != nil {
+		t.Fatalf("genesis was not copied: %v", err)
+	}
+	cfg, err := loadConfig(filepath.Join(dataDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChainID != "frg-join-1" || len(cfg.P2P.Peers) != 1 {
+		t.Fatalf("unexpected loaded config: %+v", cfg)
+	}
+	if !strings.Contains(out.String(), "mode=join-network") {
+		t.Fatalf("output missing join-network mode:\n%s", out.String())
 	}
 }
 

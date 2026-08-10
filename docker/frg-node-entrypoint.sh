@@ -27,10 +27,12 @@ if [ "$(id -u)" = "0" ]; then
   exec gosu frg "$0" "$@"
 fi
 
-if [ "${1:-}" = "init" ]; then
+case "${1:-}" in
+init|init-first-network|init-join-network)
+  init_command="$1"
   shift
   if [ "${FRG_ALLOW_BOOTSTRAP_GENESIS:-false}" = "true" ]; then
-    exec frg-node init \
+    exec frg-node "$init_command" \
       --data-dir "$DATA_DIR" \
       --chain-id "$CHAIN_ID" \
       --p2p-listen "$P2P_LISTEN" \
@@ -41,10 +43,11 @@ if [ "${1:-}" = "init" ]; then
       --metrics-listen "$METRICS_LISTEN" \
       --peers "$P2P_PEERS" \
       --enable-mdns="$P2P_ENABLE_MDNS" \
+      --write-run-script \
       --bootstrap-genesis \
       "$@"
   fi
-  exec frg-node init \
+  exec frg-node "$init_command" \
     --data-dir "$DATA_DIR" \
     --chain-id "$CHAIN_ID" \
     --p2p-listen "$P2P_LISTEN" \
@@ -55,8 +58,10 @@ if [ "${1:-}" = "init" ]; then
     --metrics-listen "$METRICS_LISTEN" \
     --peers "$P2P_PEERS" \
     --enable-mdns="$P2P_ENABLE_MDNS" \
+    --write-run-script \
     "$@"
-fi
+  ;;
+esac
 
 if [ -f "$KEY_PATH" ]; then
   chmod 600 "$KEY_PATH" 2>/dev/null || true

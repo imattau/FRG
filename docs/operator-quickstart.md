@@ -1,134 +1,117 @@
-# FRG Validator Docker Quickstart
+# FRG Validator Quickstart
 
-This guide starts one validator container from an existing network genesis file.
+This guide covers the two operator paths:
+
+- create the first node for a new network
+- join an existing network
+
+The examples use Podman. Docker works with the same image and commands; remove `:Z` from volume mounts if your Docker host does not support SELinux labels.
 
 ## Build the Image
 
 ```sh
-docker build -t frg-node:local .
+podman build -t frg-node:local .
 ```
 
-## Prepare Node Data
+## First Node for a New Network
 
-Create a persistent data directory and run the first-run initializer:
+The first node creates the initial network identity and genesis. It does not use bootstrap peers, because there is nothing to join yet.
+
+```sh
+mkdir -p frg-first
+podman run --rm \
+  -v "$PWD/frg-first:/var/lib/frg:Z" \
+  -e FRG_CHAIN_ID="frg-mainnet-1" \
+  frg-node:local init-first-network
+```
+
+This writes `frg.key`, `config.toml`, `.env`, `genesis.json`, and `run-validator.sh` into `frg-first/`.
+
+Start the first node:
+
+```sh
+cd frg-first
+./run-validator.sh
+```
+
+The init output prints the validator public key, peer ID, and advertised multiaddr. Share the advertised multiaddr as the bootstrap peer for later nodes.
+
+For a real public network with multiple genesis validators, collect all validator public keys first and publish one shared `genesis.json`. Do not let each validator run `init-first-network`, because that creates separate networks.
+
+## Join an Existing Network
+
+Joining requires the real network genesis and at least one bootstrap peer.
 
 ```sh
 mkdir -p frg-data
-docker run --rm \
-  -v "$PWD/frg-data:/var/lib/frg" \
+podman run --rm \
+  -v "$PWD/frg-data:/var/lib/frg:Z" \
+  -v "$PWD/genesis.json:/network-genesis.json:ro,Z" \
   -e FRG_CHAIN_ID="frg-mainnet-1" \
-  -e FRG_P2P_PEERS="/dns4/bootstrap-1.example/tcp/7777/p2p/PEER_ID,/dns4/bootstrap-2.example/tcp/7777/p2p/PEER_ID" \
-  frg-node:local init
+  -e FRG_P2P_PEERS="/dns4/bootstrap-1.example/tcp/7777/p2p/PEER_ID" \
+  frg-node:local init-join-network --genesis-source /network-genesis.json
 ```
 
-This writes:
-
-- `frg-data/frg.key`
-- `frg-data/config.toml`
-- `frg-data/.env`
-
-It prints the validator public key, peer ID, and advertised multiaddr. Send the validator public key to the network/genesis coordinator if you are joining as a genesis validator.
-
-Then place the network genesis in the data directory:
+Start the validator:
 
 ```sh
-cp /path/to/genesis.json frg-data/genesis.json
+cd frg-data
+./run-validator.sh
 ```
 
-If you already have a validator key instead, place the 32-byte seed or 64-byte private key before running `init`:
+If this node is intended to be a genesis validator, send the printed `validator_pubkey` to the network coordinator before genesis is finalized.
+
+## Manual Start
+
+The generated `run-validator.sh` is equivalent to:
 
 ```sh
-frg-data/frg.key
-chmod 600 frg-data/frg.key
-```
-
-If `frg.key` is missing, `frg-node` creates one on first start. That is useful for generating a node identity, but it will only be a validator if that public key is included in genesis or bonded by the network rules.
-
-## Run a Validator
-
-```sh
-docker run -d --name frg-validator \
+podman run -d --name frg-validator \
   --restart unless-stopped \
   -p 7777:7777 \
   -p 127.0.0.1:50051:50051 \
   -p 127.0.0.1:9090:9090 \
-  -v "$PWD/frg-data:/var/lib/frg" \
-  --env-file "$PWD/frg-data/.env" \
+  -v "$PWD:/var/lib/frg:Z" \
+  --env-file "$PWD/.env" \
   frg-node:local
 ```
 
-The container generates `/var/lib/frg/config.toml` if one is not mounted. It refuses to start without `genesis.json` unless `FRG_ALLOW_BOOTSTRAP_GENESIS=true` is set.
-
-## Environment
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `FRG_DATA_DIR` | `/var/lib/frg` | Persistent node data directory |
-| `FRG_CONFIG` | `$FRG_DATA_DIR/config.toml` | Config file path |
-| `FRG_KEY_PATH` | `$FRG_DATA_DIR/frg.key` | Validator key seed/private key |
-| `FRG_DB_PATH` | `$FRG_DATA_DIR/frg.db` | BoltDB state path |
-| `FRG_GENESIS_PATH` | `$FRG_DATA_DIR/genesis.json` | Network genesis |
-| `FRG_CHAIN_ID` | `frg-mainnet-1` | Chain identity |
-| `FRG_P2P_LISTEN` | `/ip4/0.0.0.0/tcp/7777` | P2P listener |
-| `FRG_P2P_PEERS` | empty | Comma-separated multiaddrs |
-| `FRG_P2P_ENABLE_MDNS` | `false` | Local discovery |
-| `FRG_GRPC_LISTEN` | `127.0.0.1:50051` | Admin gRPC listener |
-| `FRG_METRICS_LISTEN` | `127.0.0.1:9090` | Metrics/readiness listener; must be loopback |
-
-For public gRPC, configure mTLS:
-
-```sh
-docker run --rm \
-  -v "$PWD/frg-data:/var/lib/frg" \
-  -e FRG_GRPC_LISTEN="0.0.0.0:50051" \
-  -e FRG_GRPC_TLS_CERT_FILE="/var/lib/frg/tls/server.crt" \
-  -e FRG_GRPC_TLS_KEY_FILE="/var/lib/frg/tls/server.key" \
-  -e FRG_GRPC_TLS_CLIENT_CA_FILE="/var/lib/frg/tls/client-ca.crt" \
-  frg-node:local init --force
-```
-
-Set these before the first run, or re-run `init --force`, because `config.toml` is the source of truth once it exists.
-
 ## Health Checks
-
-From the host:
 
 ```sh
 curl -fsS http://127.0.0.1:9090/readyz
 curl -fsS http://127.0.0.1:9090/metrics
-docker logs -f frg-validator
+podman logs -f frg-validator
 ```
 
-## Private Single-Node Bootstrap
+## Public gRPC
 
-For local experiments only:
+The default gRPC listener is loopback-only. For public gRPC, configure mTLS at init time:
 
 ```sh
-docker run --rm \
-  -v "$PWD/frg-private:/var/lib/frg" \
-  -e FRG_ALLOW_BOOTSTRAP_GENESIS=true \
-  frg-node:local init
-
-docker run --rm -it \
-  -p 7777:7777 \
-  -p 127.0.0.1:50051:50051 \
-  -p 127.0.0.1:9090:9090 \
-  -v "$PWD/frg-private:/var/lib/frg" \
-  --env-file "$PWD/frg-private/.env" \
-  frg-node:local
+podman run --rm \
+  -v "$PWD/frg-data:/var/lib/frg:Z" \
+  -e FRG_GRPC_LISTEN="0.0.0.0:50051" \
+  -e FRG_GRPC_TLS_CERT_FILE="/var/lib/frg/tls/server.crt" \
+  -e FRG_GRPC_TLS_KEY_FILE="/var/lib/frg/tls/server.key" \
+  -e FRG_GRPC_TLS_CLIENT_CA_FILE="/var/lib/frg/tls/client-ca.crt" \
+  frg-node:local init-join-network --force \
+    --peers "/dns4/bootstrap-1.example/tcp/7777/p2p/PEER_ID" \
+    --genesis-source /var/lib/frg/genesis.json
 ```
 
-Do not use bootstrap genesis for joining an existing network.
+`config.toml` is the source of truth once it exists, so set TLS values during init or rerun init with `--force`.
 
-## Source-Build Init
+## Source Build
 
-Without Docker:
+Without containers:
 
 ```sh
 go build -o frg-node ./cmd/frg-node
-./frg-node init \
+./frg-node init-first-network --data-dir ./frg-first --chain-id frg-mainnet-1
+./frg-node init-join-network \
   --data-dir ./frg-data \
   --chain-id frg-mainnet-1 \
-  --p2p-listen /ip4/0.0.0.0/tcp/7777 \
-  --peers "/dns4/bootstrap-1.example/tcp/7777/p2p/PEER_ID"
+  --peers "/dns4/bootstrap-1.example/tcp/7777/p2p/PEER_ID" \
+  --genesis-source ./genesis.json
 ```

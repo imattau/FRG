@@ -98,11 +98,14 @@ type ConsensusConfig struct {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "init" {
-		if err := runNodeInit(os.Args[2:], os.Stdout); err != nil {
-			log.Fatalf("Init: %v", err)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "init", "init-first-network", "init-join-network":
+			if err := runNodeInitCommand(os.Args[1], os.Args[2:], os.Stdout); err != nil {
+				log.Fatalf("Init: %v", err)
+			}
+			return
 		}
-		return
 	}
 
 	configPath := flag.String("config", "config.toml", "path to config.toml")
@@ -247,6 +250,10 @@ func main() {
 }
 
 func runNodeInit(args []string, out io.Writer) error {
+	return runNodeInitCommand("init", args, out)
+}
+
+func runNodeInitCommand(command string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(out)
 	dataDir := fs.String("data-dir", ".", "node data directory")
@@ -260,9 +267,27 @@ func runNodeInit(args []string, out io.Writer) error {
 	peers := fs.String("peers", "", "comma-separated bootstrap peer multiaddrs")
 	enableMDNS := fs.Bool("enable-mdns", false, "enable mDNS discovery")
 	bootstrapGenesis := fs.Bool("bootstrap-genesis", false, "create a private single-validator genesis if missing")
+	genesisSource := fs.String("genesis-source", "", "path to an existing network genesis to copy into the data directory")
+	allowEmptyPeers := fs.Bool("allow-empty-peers", false, "allow join-network initialization without bootstrap peers")
+	containerEngine := fs.String("container-engine", "podman", "container engine used in generated run-validator.sh")
+	containerImage := fs.String("container-image", "frg-node:local", "container image used in generated run-validator.sh")
+	containerName := fs.String("container-name", "frg-validator", "container name used in generated run-validator.sh")
+	writeRunScriptFlag := fs.Bool("write-run-script", false, "write a container run helper script into the data directory")
 	force := fs.Bool("force", false, "overwrite generated config.toml and .env")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	switch command {
+	case "init-first-network":
+		*bootstrapGenesis = true
+		if strings.TrimSpace(*peers) != "" {
+			return fmt.Errorf("init-first-network starts without bootstrap peers; use init-join-network for additional validators")
+		}
+	case "init-join-network":
+		*bootstrapGenesis = false
+		if strings.TrimSpace(*peers) == "" && !*allowEmptyPeers {
+			return fmt.Errorf("init-join-network requires --peers or --allow-empty-peers")
+		}
 	}
 
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
@@ -302,6 +327,11 @@ func runNodeInit(args []string, out io.Writer) error {
 		return err
 	}
 
+	if strings.TrimSpace(*genesisSource) != "" {
+		if err := copyGenesisFile(*genesisSource, genesisPath, cfg.ChainID, *force); err != nil {
+			return err
+		}
+	}
 	if *bootstrapGenesis {
 		if err := ensureGenesis(genesisPath, cfg.ChainID, kp); err != nil {
 			return err
@@ -314,15 +344,31 @@ func runNodeInit(args []string, out io.Writer) error {
 	if err := writeEnvFile(envPath, cfg, kp, peerID, *force); err != nil {
 		return err
 	}
+	runScriptPath := ""
+	if *writeRunScriptFlag {
+		runScriptPath = filepath.Join(*dataDir, "run-validator.sh")
+		if err := writeRunScript(runScriptPath, cfg, *containerEngine, *containerImage, *containerName, *force); err != nil {
+			return err
+		}
+	}
 
 	fmt.Fprintf(out, "FRG node initialized in %s\n", *dataDir)
+	switch command {
+	case "init-first-network":
+		fmt.Fprintf(out, "  mode=first-network\n")
+	case "init-join-network":
+		fmt.Fprintf(out, "  mode=join-network\n")
+	}
 	fmt.Fprintf(out, "  validator_pubkey=%x\n", kp.PublicKey)
 	fmt.Fprintf(out, "  peer_id=%s\n", peerID)
 	fmt.Fprintf(out, "  p2p_listen=%s\n", cfg.P2P.Listen)
 	fmt.Fprintf(out, "  advertised_multiaddr=%s/p2p/%s\n", cfg.P2P.Listen, peerID)
 	fmt.Fprintf(out, "  config=%s\n", configPath)
 	fmt.Fprintf(out, "  env=%s\n", envPath)
-	if !*bootstrapGenesis {
+	if runScriptPath != "" {
+		fmt.Fprintf(out, "  run_script=%s\n", runScriptPath)
+	}
+	if !*bootstrapGenesis && strings.TrimSpace(*genesisSource) == "" {
 		fmt.Fprintf(out, "  genesis=%s (mount or copy network genesis before starting)\n", genesisPath)
 	}
 	return nil
@@ -551,6 +597,37 @@ func splitCommaList(value string) []string {
 	return out
 }
 
+func copyGenesisFile(src, dst, chainID string, force bool) error {
+	if !force {
+		if _, err := os.Stat(dst); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat genesis: %w", err)
+		}
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read genesis source: %w", err)
+	}
+	var g genesis.Genesis
+	if err := json.Unmarshal(data, &g); err != nil {
+		return fmt.Errorf("decode genesis source: %w", err)
+	}
+	if strings.TrimSpace(g.ChainID) == "" {
+		return fmt.Errorf("genesis source missing chain_id")
+	}
+	if g.ChainID != chainID {
+		return fmt.Errorf("genesis source chain ID %q does not match %q", g.ChainID, chainID)
+	}
+	if err := ensureParentDir(dst); err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return fmt.Errorf("write genesis: %w", err)
+	}
+	return nil
+}
+
 func writeConfigFile(path string, cfg Config, force bool) error {
 	if !force {
 		if _, err := os.Stat(path); err == nil {
@@ -595,6 +672,70 @@ func writeConfigFile(path string, cfg Config, force bool) error {
 	fmt.Fprintf(&b, "prevote_timeout_ms = %d\n", cfg.Consensus.PrevoteTimeoutMS)
 	fmt.Fprintf(&b, "precommit_timeout_ms = %d\n", cfg.Consensus.PrecommitTimeoutMS)
 	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+func writeRunScript(path string, cfg Config, engine, image, name string, force bool) error {
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat run script: %w", err)
+		}
+	}
+	if err := ensureParentDir(path); err != nil {
+		return err
+	}
+	p2pPort := tcpPortFromMultiaddr(cfg.P2P.Listen, "7777")
+	grpcPort := tcpPortFromAddress(cfg.GRPC.Listen, "50051")
+	metricsPort := tcpPortFromAddress(cfg.Metrics.Listen, "9090")
+	var b strings.Builder
+	fmt.Fprintf(&b, "#!/bin/sh\n")
+	fmt.Fprintf(&b, "set -eu\n\n")
+	fmt.Fprintf(&b, "ENGINE=\"${CONTAINER_ENGINE:-%s}\"\n", shellParamDefault(engine))
+	fmt.Fprintf(&b, "IMAGE=\"${FRG_IMAGE:-%s}\"\n", shellParamDefault(image))
+	fmt.Fprintf(&b, "NAME=\"${FRG_CONTAINER_NAME:-%s}\"\n\n", shellParamDefault(name))
+	fmt.Fprintf(&b, "exec \"$ENGINE\" run -d --name \"$NAME\" \\\n")
+	fmt.Fprintf(&b, "  --restart unless-stopped \\\n")
+	fmt.Fprintf(&b, "  -p %s:%s \\\n", p2pPort, p2pPort)
+	fmt.Fprintf(&b, "  -p 127.0.0.1:%s:%s \\\n", grpcPort, grpcPort)
+	fmt.Fprintf(&b, "  -p 127.0.0.1:%s:%s \\\n", metricsPort, metricsPort)
+	fmt.Fprintf(&b, "  -v \"$(pwd):/var/lib/frg:Z\" \\\n")
+	fmt.Fprintf(&b, "  --env-file \"$(pwd)/.env\" \\\n")
+	fmt.Fprintf(&b, "  \"$IMAGE\"\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0755); err != nil {
+		return fmt.Errorf("write run script: %w", err)
+	}
+	return nil
+}
+
+func tcpPortFromAddress(addr, fallback string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err == nil && port != "" {
+		return port
+	}
+	if idx := strings.LastIndex(addr, ":"); idx >= 0 && idx < len(addr)-1 {
+		return addr[idx+1:]
+	}
+	return fallback
+}
+
+func tcpPortFromMultiaddr(addr, fallback string) string {
+	parts := strings.Split(addr, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "tcp" && parts[i+1] != "" {
+			return parts[i+1]
+		}
+	}
+	return fallback
+}
+
+func shellParamDefault(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, "`", "\\`")
+	value = strings.ReplaceAll(value, "$", `\$`)
+	value = strings.ReplaceAll(value, "}", `\}`)
+	return value
 }
 
 func writeEnvFile(path string, cfg Config, kp *keys.Keypair, peerID string, force bool) error {
