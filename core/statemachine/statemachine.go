@@ -284,6 +284,83 @@ func verifyTxSigsParallel(txs []*tx.Tx, chainID string) error {
 	return nil
 }
 
+// txPrecheck holds the result of precheckTxsParallel for one tx, indexed
+// identically to the block's Txs slice.
+type txPrecheck struct {
+	err error
+	// equivValidator is validateEquivocationEvidenceTx's recovered
+	// validator pubkey, valid only when the source tx is TxTypeEquivEvidence
+	// and err is nil.
+	equivValidator [32]byte
+}
+
+// precheckTxsParallel runs the pure, per-tx validation checks (everything
+// the serial write loop in ApplyBlockForChain would otherwise call inline)
+// across txs on a worker pool, mirroring verifyTxSigsParallel. Each of
+// validateBondTx, validateZeroValueSelfTx, validateEquivocationEvidenceTx,
+// and validateMissEvidenceTx reads only its own tx plus this block's
+// already-computed, read-only context (validators, previousRoot, height) --
+// no shared mutable state -- so their outcome doesn't depend on scheduling
+// order. validateEquivocationEvidenceTx in particular performs two more
+// Ed25519 verifications per tx (the embedded evidence votes), previously
+// paid one tx at a time inside the same serial section that also mutates
+// state.
+func precheckTxsParallel(txs []*tx.Tx, chainID string, blockHeight uint64, prevStateRoot [32]byte, validators [][32]byte) []txPrecheck {
+	results := make([]txPrecheck, len(txs))
+	if len(txs) == 0 {
+		return results
+	}
+
+	check := func(i int) {
+		t := txs[i]
+		switch t.Type {
+		case tx.TxTypeBond:
+			results[i].err = validateBondTx(t)
+		case tx.TxTypeUnbond, tx.TxTypeFinalizeUnbond, tx.TxTypeClaimRewards:
+			results[i].err = validateZeroValueSelfTx(t)
+		case tx.TxTypeEquivEvidence:
+			if err := validateZeroValueTx(t); err != nil {
+				results[i].err = err
+				return
+			}
+			validator, err := validateEquivocationEvidenceTx(t, chainID)
+			results[i].err = err
+			results[i].equivValidator = validator
+		case tx.TxTypeMissEvidence:
+			results[i].err = validateMissEvidenceTx(t, blockHeight, prevStateRoot, validators)
+		}
+	}
+
+	workers := runtime.NumCPU()
+	if workers > len(txs) {
+		workers = len(txs)
+	}
+	if workers <= 1 {
+		for i := range txs {
+			check(i)
+		}
+		return results
+	}
+
+	chunk := (len(txs) + workers - 1) / workers
+	var wg sync.WaitGroup
+	for start := 0; start < len(txs); start += chunk {
+		end := start + chunk
+		if end > len(txs) {
+			end = len(txs)
+		}
+		wg.Add(1)
+		go func(s, e int) {
+			defer wg.Done()
+			for i := s; i < e; i++ {
+				check(i)
+			}
+		}(start, end)
+	}
+	wg.Wait()
+	return results
+}
+
 // isSequenceFault reports whether err is ErrSequenceFault (a tx whose nonce
 // doesn't match the account's next expected nonce). AdvanceNonceTx and
 // TransferTx check-then-write with no partial mutation, so this always fires
@@ -349,10 +426,24 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 	if err != nil {
 		return nil, err
 	}
+
+	// Precompute per-tx validation ahead of the serial loops below, on the
+	// same reasoning as verifyTxSigsParallel above: validateBondTx,
+	// validateZeroValueSelfTx, validateEquivocationEvidenceTx, and
+	// validateMissEvidenceTx only read their own tx (plus this block's
+	// already-computed validators/previousRoot/height, shared read-only
+	// context, not per-tx state), so their outcome doesn't depend on
+	// execution order and computing them concurrently is safe.
+	// validateEquivocationEvidenceTx in particular runs two more Ed25519
+	// verifications per tx (the embedded evidence votes) -- previously
+	// paid one tx at a time inside the same serial section that also does
+	// state mutation.
+	precheck := precheckTxsParallel(b.Txs, chainID, b.Height, previousRoot, validators)
+
 	seenMissEvidence := make(map[string]struct{})
-	for _, t := range b.Txs {
+	for i, t := range b.Txs {
 		if t.Type == tx.TxTypeMissEvidence {
-			if err := validateMissEvidenceTx(t, b.Height, previousRoot, validators); err != nil {
+			if err := precheck[i].err; err != nil {
 				return nil, err
 			}
 			key := missEvidenceKey(t)
@@ -436,7 +527,7 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 			case tx.TxTypeBond:
-				if err := validateBondTx(t); err != nil {
+				if err := precheck[i].err; err != nil {
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
@@ -449,7 +540,7 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 			case tx.TxTypeUnbond:
-				if err := validateZeroValueSelfTx(t); err != nil {
+				if err := precheck[i].err; err != nil {
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
@@ -462,7 +553,7 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 			case tx.TxTypeFinalizeUnbond:
-				if err := validateZeroValueSelfTx(t); err != nil {
+				if err := precheck[i].err; err != nil {
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
@@ -475,7 +566,7 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 			case tx.TxTypeClaimRewards:
-				if err := validateZeroValueSelfTx(t); err != nil {
+				if err := precheck[i].err; err != nil {
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
@@ -488,7 +579,7 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					return err
 				}
 			case tx.TxTypeEquivEvidence:
-				if err := validateZeroValueTx(t); err != nil {
+				if err := precheck[i].err; err != nil {
 					return err
 				}
 				if err := sm.ledger.AdvanceNonceTx(btx, t.SenderPubKey, t.Nonce); err != nil {
@@ -497,11 +588,7 @@ func (sm *StateMachine) ApplyBlockForChain(b *Block, chainID string) (*Result, e
 					}
 					return err
 				}
-				validator, err := validateEquivocationEvidenceTx(t, chainID)
-				if err != nil {
-					return err
-				}
-				slashAmt, err := sm.staking.SlashTx(btx, validator)
+				slashAmt, err := sm.staking.SlashTx(btx, precheck[i].equivValidator)
 				if err != nil {
 					return err
 				}
